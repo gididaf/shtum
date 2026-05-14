@@ -46,10 +46,11 @@ fn run_command(args: RunArgs) -> Result<i32> {
         Ok(0)
     } else {
         let mut plan = inject::build_plan(&args.cmd, &store)?;
-        let redact = !args.no_auto_redact;
-        if redact && !plan.secrets.is_empty() {
+        let layer_a = !args.no_auto_redact;
+        if layer_a && !plan.secrets.is_empty() {
             inject::enrich_with_store_secrets(&mut plan, &store)?;
         }
+        let layer_b = redact::build_layer_b(&args.redact, !args.no_default_redact)?;
         if !plan.argv_warnings.is_empty() {
             eprintln!(
                 "[shtum] warning: {{argv:...}} substituted into argv — value(s) for {} \
@@ -57,7 +58,7 @@ fn run_command(args: RunArgs) -> Result<i32> {
                 plan.argv_warnings.join(", ")
             );
         }
-        exec::run_plan(plan, redact)
+        exec::run_plan(plan, layer_a, layer_b)
     }
 }
 

@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use regex::bytes::Regex;
 use std::ffi::OsString;
 use std::io::{self, Read, Write};
 use std::os::unix::ffi::OsStringExt;
@@ -22,7 +23,11 @@ use crate::redact::Filter;
 /// is piped to the subprocess's stdin and then closed (signaling EOF).
 /// `plan.tempfiles` is held alive until after `wait()` returns so the RAII
 /// guards' Drop runs only after the subprocess has finished reading them.
-pub fn run_plan(plan: Plan, redact: bool) -> Result<i32> {
+pub fn run_plan(
+    plan: Plan,
+    layer_a: bool,
+    layer_b: Option<Regex>,
+) -> Result<i32> {
     let Plan {
         argv,
         secrets,
@@ -42,7 +47,8 @@ pub fn run_plan(plan: Plan, redact: bool) -> Result<i32> {
         cmd.env(k, OsString::from_vec(v.clone()));
     }
 
-    let pipe_output = redact && !secrets.is_empty();
+    let effective_secrets: Vec<Vec<u8>> = if layer_a { secrets } else { Vec::new() };
+    let pipe_output = !effective_secrets.is_empty() || layer_b.is_some();
     let pipe_input = stdin.is_some();
 
     if pipe_input {
@@ -74,13 +80,15 @@ pub fn run_plan(plan: Plan, redact: bool) -> Result<i32> {
     let (out_handle, err_handle) = if pipe_output {
         let child_stdout = child.stdout.take().expect("stdout piped");
         let child_stderr = child.stderr.take().expect("stderr piped");
-        let secrets_out = secrets.clone();
-        let secrets_err = secrets;
+        let secrets_out = effective_secrets.clone();
+        let secrets_err = effective_secrets;
+        let layer_b_out = layer_b.clone();
+        let layer_b_err = layer_b;
         let oh = thread::spawn(move || -> io::Result<()> {
-            pipe_filtered(child_stdout, io::stdout(), &secrets_out)
+            pipe_filtered(child_stdout, io::stdout(), &secrets_out, layer_b_out)
         });
         let eh = thread::spawn(move || -> io::Result<()> {
-            pipe_filtered(child_stderr, io::stderr(), &secrets_err)
+            pipe_filtered(child_stderr, io::stderr(), &secrets_err, layer_b_err)
         });
         (Some(oh), Some(eh))
     } else {
@@ -123,8 +131,13 @@ fn exit_code(status: std::process::ExitStatus) -> i32 {
     }
 }
 
-fn pipe_filtered<R: Read, W: Write>(mut r: R, mut w: W, secrets: &[Vec<u8>]) -> io::Result<()> {
-    let mut filter = Filter::new(secrets);
+fn pipe_filtered<R: Read, W: Write>(
+    mut r: R,
+    mut w: W,
+    secrets: &[Vec<u8>],
+    layer_b: Option<Regex>,
+) -> io::Result<()> {
+    let mut filter = Filter::new(secrets, layer_b);
     let mut buf = [0u8; 8192];
     loop {
         let n = r.read(&mut buf)?;

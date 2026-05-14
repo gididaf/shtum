@@ -45,6 +45,19 @@ pub struct RunArgs {
     #[arg(long)]
     pub no_auto_redact: bool,
 
+    /// Additional regex pattern to redact from subprocess output. Repeatable.
+    /// Patterns are merged with the built-in default set (unless
+    /// `--no-default-redact` is also passed). Matches are replaced with
+    /// `[REDACTED]`. Pattern syntax: <https://docs.rs/regex/latest/regex/#syntax>.
+    #[arg(long = "redact", value_name = "REGEX")]
+    pub redact: Vec<String>,
+
+    /// Disable the built-in default redaction regex set (JWTs, AWS access
+    /// keys, Bearer tokens, GitHub PATs). Any `--redact` patterns are still
+    /// applied.
+    #[arg(long)]
+    pub no_default_redact: bool,
+
     /// The command and its arguments, with placeholder references.
     #[arg(
         trailing_var_arg = true,
