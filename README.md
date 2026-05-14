@@ -1,6 +1,6 @@
 # shtum
 
-> **Status:** v0.1.0 — working on macOS. Linux deferred. Not yet published to package registries; build from source for now.
+> **Status:** v0.2.0 — working on macOS. Linux deferred. Not yet published to package registries; build from source for now.
 
 `shtum` is a local Rust CLI that lets an AI coding agent (Claude Code and similar) invoke authenticated commands **without ever holding the credentials in its own context window**. Secrets live in the macOS Keychain. The agent uses placeholder references like `{CF_TOKEN}`. `shtum` resolves them at exec time, runs the command, and scrubs the literal values back out of stdout/stderr before they reach the caller.
 
@@ -17,7 +17,7 @@ For the full design rationale and threat model, see [`PLAN.md`](./PLAN.md) and [
 ## Install
 
 ```bash
-git clone <repo-url> shtum && cd shtum
+git clone https://github.com/gididaf/shtum.git && cd shtum
 cargo build --release
 cp target/release/shtum ~/.local/bin/    # or anywhere on PATH
 ```

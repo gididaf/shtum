@@ -4,6 +4,8 @@ All notable changes to `shtum` are recorded here. Format loosely follows [Keep a
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-05-14
+
 ### Added
 
 - **`shtum dashboard`** — local web UI for Keychain CRUD and hook-install snippet copy-paste.
@@ -65,4 +67,5 @@ First working version. macOS only. Not yet published to package registries; buil
 - **Config file** deferred to v2 (flag-driven only in v1).
 
 [Unreleased]: #unreleased
+[0.2.0]: #020--2026-05-14
 [0.1.0]: #010--2026-05-14

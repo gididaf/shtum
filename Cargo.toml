@@ -1,11 +1,16 @@
 [package]
 name = "shtum"
-version = "0.1.0-dev"
+version = "0.2.0"
 edition = "2024"
-description = "Secret-injecting command wrapper for AI agents"
+description = "Secret-injecting command wrapper for AI agents — keeps credentials out of the LLM context."
 license = "Apache-2.0"
 readme = "README.md"
 rust-version = "1.85"
+authors = ["Gidi Dafner <gidi@dreamvps.com>"]
+repository = "https://github.com/gididaf/shtum"
+homepage = "https://github.com/gididaf/shtum"
+keywords = ["secrets", "keychain", "ai", "agents", "credentials"]
+categories = ["command-line-utilities", "development-tools"]
 publish = false
 
 [dependencies]
