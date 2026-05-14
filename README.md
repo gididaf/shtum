@@ -16,6 +16,24 @@ For the full design rationale and threat model, see [`PLAN.md`](./PLAN.md) and [
 
 ## Install
 
+### Prebuilt binary (recommended)
+
+Each tagged release publishes signed-by-SHA256 macOS tarballs for Apple Silicon and Intel. Download, verify, extract, drop on PATH:
+
+```bash
+VERSION=v0.2.0
+ARCH=$(uname -m); [ "$ARCH" = "arm64" ] && TARGET=aarch64-apple-darwin || TARGET=x86_64-apple-darwin
+curl -fsSL -O "https://github.com/gididaf/shtum/releases/download/${VERSION}/shtum-${VERSION}-${TARGET}.tar.gz"
+curl -fsSL -O "https://github.com/gididaf/shtum/releases/download/${VERSION}/SHA256SUMS"
+shasum -a 256 -c SHA256SUMS --ignore-missing
+tar xzf "shtum-${VERSION}-${TARGET}.tar.gz"
+sudo mv "shtum-${VERSION}-${TARGET}/shtum" /usr/local/bin/
+```
+
+The binary is not notarized in v0.x, so macOS Gatekeeper will warn on first run. Allow once via System Settings → Privacy & Security → "Allow Anyway", or strip the quarantine flag with `xattr -dr com.apple.quarantine /usr/local/bin/shtum`.
+
+### From source
+
 ```bash
 git clone https://github.com/gididaf/shtum.git && cd shtum
 cargo build --release

@@ -1,0 +1,108 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build (${{ matrix.target }})
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            runner: macos-14
+          - target: x86_64-apple-darwin
+            runner: macos-13
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+
+      - name: Tests
+        run: cargo test --release --locked --target ${{ matrix.target }}
+
+      - name: Build
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Package
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          STAGE="shtum-v${VERSION}-${TARGET}"
+          mkdir -p "dist/${STAGE}"
+          cp "target/${TARGET}/release/shtum" "dist/${STAGE}/"
+          cp LICENSE README.md CHANGELOG.md "dist/${STAGE}/"
+          tar -C dist -czf "dist/${STAGE}.tar.gz" "${STAGE}"
+          rm -rf "dist/${STAGE}"
+          ls -la dist/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tarball-${{ matrix.target }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  release:
+    name: publish release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Compute SHA256SUMS
+        run: |
+          set -euo pipefail
+          cd artifacts
+          sha256sum *.tar.gz > SHA256SUMS
+          echo "--- SHA256SUMS ---"
+          cat SHA256SUMS
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/*.tar.gz
+            artifacts/SHA256SUMS
+          fail_on_unmatched_files: true
+          generate_release_notes: false
+          body: |
+            macOS binaries for ${{ github.ref_name }}. Full notes in [CHANGELOG.md](https://github.com/gididaf/shtum/blob/${{ github.ref_name }}/CHANGELOG.md).
+
+            ## Install
+
+            ```bash
+            VERSION="${{ github.ref_name }}"
+            ARCH=$(uname -m); [ "$ARCH" = "arm64" ] && TARGET=aarch64-apple-darwin || TARGET=x86_64-apple-darwin
+            curl -fsSL -O "https://github.com/gididaf/shtum/releases/download/${VERSION}/shtum-${VERSION}-${TARGET}.tar.gz"
+            curl -fsSL -O "https://github.com/gididaf/shtum/releases/download/${VERSION}/SHA256SUMS"
+            shasum -a 256 -c SHA256SUMS --ignore-missing
+            tar xzf "shtum-${VERSION}-${TARGET}.tar.gz"
+            sudo mv "shtum-${VERSION}-${TARGET}/shtum" /usr/local/bin/
+            ```
+
+            **First-run Gatekeeper warning is expected** — the binary is not yet notarized in v0.x.
+            Allow once via System Settings → Privacy & Security → "Allow Anyway", or strip the quarantine flag manually:
+
+            ```bash
+            xattr -dr com.apple.quarantine /usr/local/bin/shtum
+            ```
