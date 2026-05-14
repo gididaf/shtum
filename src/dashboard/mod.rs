@@ -22,6 +22,11 @@ use crate::util::shtum_exe_path;
 use auth::{AuthResult, Token};
 use html::{Flash, FlashKind};
 
+/// Status code + response body. Helper functions return this tuple so the
+/// top-level handler can log the status without having to pry it back out
+/// of an opaque `ResponseBox`.
+type Resp = (u16, ResponseBox);
+
 const ENV_PORT: &str = "PORT";
 /// Hard cap on a single POST body. Plenty for a name + value + token; a
 /// well-behaved client can't bury us in memory by sending GBs.
@@ -116,55 +121,111 @@ fn handle(
     store: &dyn SecretStore,
     shtum_path: &str,
 ) -> Result<()> {
+    let method_for_log = format!("{:?}", request.method()).to_uppercase();
+    let url_for_log = request.url().to_string();
+
     let host_ok = auth::host_header(&request)
         .map(|h| auth::host_ok(h, port))
         .unwrap_or(false);
-    if !host_ok {
-        return respond(request, error_response(421, "misdirected request"));
-    }
-
-    let response = match request.method() {
-        Method::Get => {
-            // Token must be in URL for GETs.
-            match auth::check_get(&request, token, port) {
+    let (status, response) = if !host_ok {
+        error_response(421, "misdirected request")
+    } else {
+        match request.method() {
+            Method::Get => match auth::check_get(&request, token, port) {
                 AuthResult::Ok => dispatch_get(&request, token, store, shtum_path),
                 AuthResult::BadHost => error_response(421, "misdirected request"),
                 AuthResult::BadToken => error_response(403, "missing or invalid token"),
-            }
+            },
+            Method::Post => dispatch_post(&mut request, token, store, shtum_path),
+            _ => error_response(405, "method not allowed"),
         }
-        Method::Post => dispatch_post(&mut request, token, store, shtum_path),
-        _ => error_response(405, "method not allowed"),
     };
 
-    respond(request, response)
-}
-
-fn respond(request: tiny_http::Request, response: ResponseBox) -> Result<()> {
+    log_request(&method_for_log, &url_for_log, status);
     request
         .respond(response)
         .context("failed to write response")?;
     Ok(())
 }
 
-/// GET dispatch. Routes the index (with optional `?flash=...` from a recent
-/// redirect) and refuses everything else.
+/// One-line access log. Token query values are redacted, request bodies
+/// are never touched (so reveal responses can't accidentally leak into
+/// stderr).
+fn log_request(method: &str, url: &str, status: u16) {
+    eprintln!(
+        "[shtum dashboard] {method} {} {status}",
+        redact_token_in_url(url),
+    );
+}
+
+/// Replace the value of any `token=...` query pair with `[REDACTED]`.
+/// Other params (including `flash=...` after a redirect) are kept verbatim;
+/// they're already percent-encoded so they're safe-to-log strings.
+fn redact_token_in_url(url: &str) -> String {
+    let Some((path, query)) = url.split_once('?') else {
+        return url.to_string();
+    };
+    let mut out = String::with_capacity(url.len());
+    out.push_str(path);
+    out.push('?');
+    let mut first = true;
+    for pair in query.split('&') {
+        if !first {
+            out.push('&');
+        }
+        first = false;
+        if let Some((k, _)) = pair.split_once('=') {
+            if k == "token" {
+                out.push_str("token=[REDACTED]");
+                continue;
+            }
+        }
+        out.push_str(pair);
+    }
+    out
+}
+
+/// GET dispatch. Routes the index (with optional `?flash=...` from a
+/// recent redirect), the reveal endpoint for a single secret, and 404
+/// otherwise.
 fn dispatch_get(
     request: &tiny_http::Request,
     token: &Token,
     store: &dyn SecretStore,
     shtum_path: &str,
-) -> ResponseBox {
+) -> Resp {
     let (path, query) = split_path_query(request.url());
-    match path {
-        "/" => {
+    match match_get_route(path) {
+        GetRoute::Index => {
             let flash_owned = extract_flash(query);
             let flash = flash_owned
                 .as_ref()
                 .map(|(kind, msg)| Flash { kind: *kind, message: msg.as_str() });
             index_page(token, store, shtum_path, flash)
         }
-        _ => error_response(404, "not found"),
+        GetRoute::Reveal(name) => handle_reveal(store, name),
+        GetRoute::NotFound => error_response(404, "not found"),
     }
+}
+
+enum GetRoute<'a> {
+    Index,
+    Reveal(&'a str),
+    NotFound,
+}
+
+fn match_get_route(path: &str) -> GetRoute<'_> {
+    if path == "/" {
+        return GetRoute::Index;
+    }
+    if let Some(rest) = path.strip_prefix("/secrets/") {
+        if let Some(name) = rest.strip_suffix("/reveal") {
+            if !name.is_empty() && !name.contains('/') {
+                return GetRoute::Reveal(name);
+            }
+        }
+    }
+    GetRoute::NotFound
 }
 
 /// POST dispatch. Reads the body up to [`MAX_BODY_BYTES`], rejects anything
@@ -177,9 +238,7 @@ fn dispatch_post(
     token: &Token,
     store: &dyn SecretStore,
     _shtum_path: &str,
-) -> ResponseBox {
-    // Resolve the route into an owned variant first so the immutable
-    // borrow of `request.url()` is gone before we read the body.
+) -> Resp {
     let (path, _query) = split_path_query(request.url());
     let route = match_post_route(path).into_owned();
 
@@ -258,7 +317,7 @@ fn match_post_route(path: &str) -> PostRoute<'_> {
 
 /// Read the request body with hard size and Content-Type guards. Returns
 /// either the body bytes or a pre-formed error response.
-fn read_form_body(request: &mut tiny_http::Request) -> Result<Vec<u8>, ResponseBox> {
+fn read_form_body(request: &mut tiny_http::Request) -> Result<Vec<u8>, Resp> {
     let ct_ok = request.headers().iter().any(|h| {
         h.field.as_str().as_str().eq_ignore_ascii_case("content-type")
             && h.value
@@ -300,7 +359,7 @@ fn handle_add(
     store: &dyn SecretStore,
     form: &HashMap<String, String>,
     token: &Token,
-) -> ResponseBox {
+) -> Resp {
     let name = match form.get("name") {
         Some(n) if !n.is_empty() => n,
         _ => return redirect_with_flash(token, FlashKind::Error, "name is required"),
@@ -323,7 +382,7 @@ fn handle_rotate(
     name_in_path: &str,
     form: &HashMap<String, String>,
     token: &Token,
-) -> ResponseBox {
+) -> Resp {
     // The form also includes a `name` field; require they agree so a stale
     // tab can't rotate a different secret than the one shown.
     if let Some(form_name) = form.get("name") {
@@ -364,7 +423,22 @@ fn handle_rotate(
     }
 }
 
-fn handle_delete(store: &dyn SecretStore, name_in_path: &str, token: &Token) -> ResponseBox {
+/// Token-gated read of a single secret's value. Returns `text/plain` so
+/// arbitrary stored bytes (including `<script>` or other HTML-ish data)
+/// cannot be misinterpreted as a renderable document. The body is the
+/// only response that carries a secret value; we never log it.
+fn handle_reveal(store: &dyn SecretStore, name: &str) -> Resp {
+    if let Err(e) = validate_name(name) {
+        return error_response(400, &format!("{e}"));
+    }
+    match store.get(name) {
+        Ok(value) => text_response(200, value),
+        Err(StoreError::NotFound(_)) => error_response(404, "secret not found"),
+        Err(e) => error_response(500, &format!("Keychain read failed: {e}")),
+    }
+}
+
+fn handle_delete(store: &dyn SecretStore, name_in_path: &str, token: &Token) -> Resp {
     if let Err(e) = validate_name(name_in_path) {
         return redirect_with_flash(token, FlashKind::Error, &format!("{e}"));
     }
@@ -383,7 +457,7 @@ fn handle_delete(store: &dyn SecretStore, name_in_path: &str, token: &Token) -> 
 /// message encoded into the query string. 303 is correct for "after a
 /// successful POST, send the client to a GET" — the browser will not
 /// re-submit the form if the user reloads the destination.
-fn redirect_with_flash(token: &Token, kind: FlashKind, message: &str) -> ResponseBox {
+fn redirect_with_flash(token: &Token, kind: FlashKind, message: &str) -> Resp {
     let kind_param = match kind {
         FlashKind::Info => "info",
         FlashKind::Error => "error",
@@ -399,14 +473,15 @@ fn redirect_with_flash(token: &Token, kind: FlashKind, message: &str) -> Respons
     let body = "redirecting...";
     let data = body.as_bytes().to_vec();
     let len = data.len();
-    Response::new(
+    let response = Response::new(
         StatusCode(303),
         headers,
         Cursor::new(data),
         Some(len),
         None,
     )
-    .boxed()
+    .boxed();
+    (303, response)
 }
 
 /// Render the dashboard index. Keychain read failures show an inline error
@@ -416,7 +491,7 @@ fn index_page(
     store: &dyn SecretStore,
     shtum_path: &str,
     flash: Option<Flash<'_>>,
-) -> ResponseBox {
+) -> Resp {
     let secrets = match store.list() {
         Ok(names) => names,
         Err(e) => {
@@ -462,20 +537,37 @@ fn split_path_query(url: &str) -> (&str, Option<&str>) {
     }
 }
 
-fn html_response(status: u16, body: &str) -> ResponseBox {
+fn html_response(status: u16, body: &str) -> Resp {
     let data = body.as_bytes().to_vec();
     let len = data.len();
-    Response::new(
+    let response = Response::new(
         StatusCode(status),
         security_headers("text/html; charset=utf-8"),
         Cursor::new(data),
         Some(len),
         None,
     )
-    .boxed()
+    .boxed();
+    (status, response)
 }
 
-fn error_response(status: u16, msg: &str) -> ResponseBox {
+/// Plain-text response used for the reveal endpoint. Sniff-proof so a
+/// stored value containing `<script>` can't be misinterpreted as HTML by
+/// a misconfigured browser.
+fn text_response(status: u16, body: Vec<u8>) -> Resp {
+    let len = body.len();
+    let response = Response::new(
+        StatusCode(status),
+        security_headers("text/plain; charset=utf-8"),
+        Cursor::new(body),
+        Some(len),
+        None,
+    )
+    .boxed();
+    (status, response)
+}
+
+fn error_response(status: u16, msg: &str) -> Resp {
     let body = html::error_page(status, msg);
     html_response(status, &body)
 }
@@ -493,7 +585,7 @@ fn security_headers(content_type: &str) -> Vec<Header> {
         header("Content-Type", content_type),
         header(
             "Content-Security-Policy",
-            "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
+            "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
         ),
         header("X-Content-Type-Options", "nosniff"),
         header("Referrer-Policy", "no-referrer"),

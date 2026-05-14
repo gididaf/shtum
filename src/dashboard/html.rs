@@ -127,9 +127,13 @@ button {{ padding: 0.3rem 0.8rem; border: 1px solid #888; background: #f7f7f7; c
 button:hover {{ background: #ececec; }}
 button.danger {{ color: #802020; border-color: #d99; background: #fff5f5; }}
 button.danger:hover {{ background: #fde4e4; }}
+.value-display {{ display: none; padding: 0.25rem 0.5rem; background: #fffbe0; border: 1px solid #e6d878; border-radius: 3px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.85rem; word-break: break-all; max-width: 320px; }}
+.value-display.shown {{ display: inline-block; }}
+.snippet-wrap {{ position: relative; }}
+.snippet-wrap button.copy-btn {{ position: absolute; top: 0.5rem; right: 0.5rem; font-size: 0.75rem; padding: 0.2rem 0.6rem; }}
 </style>
 </head>
-<body>
+<body data-token="{token}">
 <h1>shtum dashboard</h1>
 {flash_html}
 
@@ -140,23 +144,79 @@ button.danger:hover {{ background: #fde4e4; }}
 <p class="hint">These commands install the PreToolUse hook that rewrites Bash tool calls containing <code>{{NAME}}</code> placeholders through <code>shtum run</code>. Pick one:</p>
 
 <p><strong>Global</strong> (writes to <code>~/.claude/settings.json</code>, applies to every project):</p>
-<pre class="snippet">{}</pre>
+<div class="snippet-wrap">
+<pre class="snippet" id="snippet-global">{}</pre>
+<button type="button" class="copy-btn" data-action="copy" data-target="snippet-global">Copy</button>
+</div>
 
 <p><strong>Per-project</strong> (writes to <code>./.claude/settings.json</code> in the directory you run it from):</p>
-<pre class="snippet">{}</pre>
+<div class="snippet-wrap">
+<pre class="snippet" id="snippet-project">{}</pre>
+<button type="button" class="copy-btn" data-action="copy" data-target="snippet-project">Copy</button>
+</div>
 <p class="hint">Replace <code>/path/to/your-project</code> with the project directory you want to enable.</p>
 
+<script>
+(function() {{
+  var token = document.body.dataset.token;
+  document.addEventListener('click', function(e) {{
+    var btn = e.target.closest('[data-action]');
+    if (!btn) return;
+    var action = btn.dataset.action;
+    if (action === 'reveal') return revealOrHide(btn);
+    if (action === 'copy') return copySnippet(btn);
+  }});
+  function revealOrHide(btn) {{
+    var cell = btn.parentElement.querySelector('.value-display');
+    if (!cell) return;
+    if (btn.dataset.shown === '1') {{ hide(btn, cell); return; }}
+    var name = btn.dataset.name;
+    fetch('/secrets/' + encodeURIComponent(name) + '/reveal?token=' + encodeURIComponent(token))
+      .then(function(r) {{ if (!r.ok) throw new Error('HTTP ' + r.status); return r.text(); }})
+      .then(function(value) {{
+        cell.textContent = value;
+        cell.classList.add('shown');
+        btn.textContent = 'Hide';
+        btn.dataset.shown = '1';
+        if (btn._t) clearTimeout(btn._t);
+        btn._t = setTimeout(function() {{ hide(btn, cell); }}, 30000);
+      }})
+      .catch(function(err) {{ alert('reveal failed: ' + err.message); }});
+  }}
+  function hide(btn, cell) {{
+    cell.textContent = '';
+    cell.classList.remove('shown');
+    btn.textContent = 'Reveal';
+    btn.dataset.shown = '';
+    if (btn._t) {{ clearTimeout(btn._t); btn._t = null; }}
+  }}
+  function copySnippet(btn) {{
+    var target = document.getElementById(btn.dataset.target);
+    if (!target) return;
+    var text = target.textContent;
+    if (!navigator.clipboard) {{ alert('clipboard API unavailable'); return; }}
+    navigator.clipboard.writeText(text).then(function() {{
+      var orig = btn.dataset.orig || btn.textContent;
+      btn.dataset.orig = orig;
+      btn.textContent = 'Copied!';
+      setTimeout(function() {{ btn.textContent = orig; }}, 1500);
+    }}).catch(function(err) {{ alert('copy failed: ' + err.message); }});
+  }}
+}})();
+</script>
 </body>
 </html>"#,
         escape(&global_cmd),
         escape(&project_cmd),
+        token = token_esc,
     )
 }
 
-/// Render a single `<tr>` for a secret. The delete button uses an inline
-/// `onsubmit="return confirm(...)"` so a stray click can't wipe a secret
-/// without the user explicitly approving the prompt — inline-script CSP is
-/// already opened up for this and the reveal/copy JS that lands in P-D4.
+/// Render a single `<tr>` for a secret. Reveal/Hide is wired up via
+/// event-delegation in the page-level script — no inline `onclick`
+/// attributes. The delete form keeps an inline `onsubmit` confirm() so
+/// the prompt fires even if the page-level JS errored out for some
+/// reason.
 fn render_secret_row(name: &str, token_esc: &str) -> String {
     let name_esc = escape(name);
     let confirm_msg = escape(&format!(
@@ -164,6 +224,8 @@ fn render_secret_row(name: &str, token_esc: &str) -> String {
     ));
     format!(
         r#"<tr><td class="name">{name_esc}</td><td class="actions">
+<button type="button" class="reveal-btn" data-action="reveal" data-name="{name_esc}">Reveal</button>
+<span class="value-display"></span>
 <form class="inline" action="/secrets/{name_esc}/rotate" method="post" autocomplete="off">
 <input type="hidden" name="token" value="{token_esc}">
 <input type="hidden" name="name" value="{name_esc}">
