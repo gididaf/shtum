@@ -33,12 +33,17 @@ pub enum Command {
 
 #[derive(clap::Args, Debug)]
 pub struct RunArgs {
-    /// Don't actually execute. Print the rewritten invocation and the env-var
-    /// assignments, with secret values shown as `[REDACTED:<placeholder>]`.
-    /// Still resolves all placeholders, so this doubles as a "are my secrets
-    /// reachable?" check.
+    /// Don't actually execute. Print the rewritten invocation with secret
+    /// values shown as `[REDACTED:<placeholder>]`. Still resolves all
+    /// placeholders, so this doubles as a "are my secrets reachable?" check.
     #[arg(long)]
     pub dry_run: bool,
+
+    /// Disable the automatic stdout/stderr scrubber that replaces literal,
+    /// URL-encoded, and base64-encoded occurrences of injected secret values
+    /// with `[REDACTED]`. Useful for debugging only.
+    #[arg(long)]
+    pub no_auto_redact: bool,
 
     /// The command and its arguments, with placeholder references.
     #[arg(

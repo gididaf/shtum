@@ -1,6 +1,7 @@
 mod cli;
 mod exec;
 mod inject;
+mod redact;
 mod store;
 
 use anyhow::{Context, Result};
@@ -41,8 +42,12 @@ fn run_command(args: RunArgs) -> Result<i32> {
         print_dry_run(&args.cmd);
         Ok(0)
     } else {
-        let plan = inject::build_plan(&args.cmd, &store)?;
-        exec::run_plan(plan)
+        let mut plan = inject::build_plan(&args.cmd, &store)?;
+        let redact = !args.no_auto_redact;
+        if redact && !plan.secrets.is_empty() {
+            inject::enrich_with_store_secrets(&mut plan, &store)?;
+        }
+        exec::run_plan(plan, redact)
     }
 }
 

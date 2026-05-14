@@ -99,9 +99,12 @@ pub fn parse_arg(s: &str) -> Vec<Segment> {
 
 /// Resolved execution plan: the argv to exec, with placeholder values
 /// substituted in place. Values are bytes (not String) so binary-safe secrets
-/// can flow through unchanged.
+/// can flow through unchanged. `secrets` is the deduped set of raw resolved
+/// values, used by the redaction layer to scrub them back out of subprocess
+/// output.
 pub struct Plan {
     pub argv: Vec<Vec<u8>>,
+    pub secrets: Vec<Vec<u8>>,
 }
 
 pub fn build_plan(argv: &[String], store: &dyn SecretStore) -> Result<Plan> {
@@ -136,7 +139,34 @@ pub fn build_plan(argv: &[String], store: &dyn SecretStore) -> Result<Plan> {
         out_argv.push(bytes);
     }
 
-    Ok(Plan { argv: out_argv })
+    let mut secrets: Vec<Vec<u8>> = values.into_values().filter(|v| !v.is_empty()).collect();
+    secrets.sort();
+    secrets.dedup();
+
+    Ok(Plan {
+        argv: out_argv,
+        secrets,
+    })
+}
+
+/// When at least one placeholder resolved, also fold every other stored
+/// secret into the redaction set, so a forgotten `{NAME}` doesn't let a
+/// stored value slip through. Failures to load individual entries print a
+/// warning but do not abort the run.
+pub fn enrich_with_store_secrets(plan: &mut Plan, store: &dyn SecretStore) -> Result<()> {
+    let names = store
+        .list()
+        .context("failed to enumerate stored secrets for redaction")?;
+    for name in names {
+        match store.get(&name) {
+            Ok(v) if !v.is_empty() => plan.secrets.push(v),
+            Ok(_) => {}
+            Err(e) => eprintln!("shtum: could not load `{name}` for redaction: {e}"),
+        }
+    }
+    plan.secrets.sort();
+    plan.secrets.dedup();
+    Ok(())
 }
 
 /// For dry-run display: rebuild each argv string with placeholders replaced
