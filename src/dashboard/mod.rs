@@ -175,7 +175,7 @@ fn security_headers(content_type: &str) -> Vec<Header> {
         header("Content-Type", content_type),
         header(
             "Content-Security-Policy",
-            "default-src 'none'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
+            "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
         ),
         header("X-Content-Type-Options", "nosniff"),
         header("Referrer-Policy", "no-referrer"),
