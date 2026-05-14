@@ -1,10 +1,32 @@
 use anyhow::{Context, Result, anyhow, bail};
 use regex::Regex;
 use std::collections::BTreeMap;
+use std::os::unix::ffi::OsStrExt;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
 use crate::store::{SecretStore, StoreError};
+use crate::tempfile::TempFileGuard;
+
+/// How the resolved value reaches the subprocess.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mode {
+    /// Default: literal byte substitution into the argv string.
+    Argv,
+    /// `{argv:NAME}` — explicit argv substitution; prints a stderr warning.
+    ArgvExplicit,
+    /// `{env-inject:NAME}` — directive: set `NAME=<value>` in subprocess env,
+    /// strip the placeholder argv slot. Must be a standalone argv element.
+    EnvInject,
+    /// `{stdin:NAME}` — directive: pipe `<value>` to subprocess stdin, strip
+    /// the placeholder argv slot. Must be a standalone argv element. At most
+    /// one per command.
+    Stdin,
+    /// `{tempfile:NAME}` — inline: write value to a `0600` temp file and
+    /// substitute the file path. Multiple refs to the same NAME share one
+    /// file. RAII cleanup on normal exit.
+    TempFile,
+}
 
 /// Where to look up a placeholder's value.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -20,12 +42,10 @@ pub enum PlaceholderSource {
 }
 
 impl PlaceholderSource {
-    pub fn display(&self) -> String {
+    fn name(&self) -> Option<&str> {
         match self {
-            Self::Default(n) => n.clone(),
-            Self::Keychain(n) => format!("kc:{n}"),
-            Self::Env(n) => format!("env:{n}"),
-            Self::File(p) => format!("file:{}", p.display()),
+            Self::Default(n) | Self::Keychain(n) | Self::Env(n) => Some(n),
+            Self::File(_) => None,
         }
     }
 }
@@ -35,6 +55,7 @@ pub struct PlaceholderRef {
     /// Original placeholder text including braces, e.g. `{CF_TOKEN}`.
     pub raw: String,
     pub source: PlaceholderSource,
+    pub mode: Mode,
 }
 
 #[derive(Debug)]
@@ -48,17 +69,38 @@ fn placeholder_regex() -> &'static Regex {
     RE.get_or_init(|| Regex::new(r"\{([^{}]*)\}").unwrap())
 }
 
-fn classify(inner: &str) -> Option<PlaceholderSource> {
+/// Returns (mode, source) for the contents of `{...}`, or None if the text
+/// doesn't look like a valid placeholder (e.g. JSON braces).
+fn classify(inner: &str) -> Option<(Mode, PlaceholderSource)> {
+    // Source prefixes
     if let Some(rest) = inner.strip_prefix("kc:") {
-        return is_valid_name(rest).then(|| PlaceholderSource::Keychain(rest.to_string()));
+        return is_valid_name(rest).then(|| (Mode::Argv, PlaceholderSource::Keychain(rest.to_string())));
     }
     if let Some(rest) = inner.strip_prefix("env:") {
-        return is_valid_name(rest).then(|| PlaceholderSource::Env(rest.to_string()));
+        return is_valid_name(rest).then(|| (Mode::Argv, PlaceholderSource::Env(rest.to_string())));
     }
     if let Some(rest) = inner.strip_prefix("file:") {
-        return (!rest.is_empty()).then(|| PlaceholderSource::File(PathBuf::from(rest)));
+        return (!rest.is_empty()).then(|| (Mode::Argv, PlaceholderSource::File(PathBuf::from(rest))));
     }
-    is_valid_name(inner).then(|| PlaceholderSource::Default(inner.to_string()))
+    // Mode prefixes (source is always Default for these)
+    if let Some(rest) = inner.strip_prefix("argv:") {
+        return is_valid_name(rest)
+            .then(|| (Mode::ArgvExplicit, PlaceholderSource::Default(rest.to_string())));
+    }
+    if let Some(rest) = inner.strip_prefix("env-inject:") {
+        return is_valid_name(rest)
+            .then(|| (Mode::EnvInject, PlaceholderSource::Default(rest.to_string())));
+    }
+    if let Some(rest) = inner.strip_prefix("stdin:") {
+        return is_valid_name(rest)
+            .then(|| (Mode::Stdin, PlaceholderSource::Default(rest.to_string())));
+    }
+    if let Some(rest) = inner.strip_prefix("tempfile:") {
+        return is_valid_name(rest)
+            .then(|| (Mode::TempFile, PlaceholderSource::Default(rest.to_string())));
+    }
+    // Bare name = default store, default mode
+    is_valid_name(inner).then(|| (Mode::Argv, PlaceholderSource::Default(inner.to_string())))
 }
 
 fn is_valid_name(s: &str) -> bool {
@@ -67,8 +109,9 @@ fn is_valid_name(s: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.')
 }
 
-/// Parse a single argv string into a sequence of literal and placeholder segments.
-/// Non-placeholder `{...}` content (e.g. JSON literals) is preserved as literal text.
+/// Parse a single argv string into a sequence of literal and placeholder
+/// segments. Non-placeholder `{...}` content (e.g. JSON literals) is
+/// preserved as literal text.
 pub fn parse_arg(s: &str) -> Vec<Segment> {
     let re = placeholder_regex();
     let mut out = Vec::new();
@@ -76,7 +119,7 @@ pub fn parse_arg(s: &str) -> Vec<Segment> {
     for m in re.captures_iter(s) {
         let whole = m.get(0).unwrap();
         let inner = m.get(1).unwrap().as_str();
-        let Some(source) = classify(inner) else {
+        let Some((mode, source)) = classify(inner) else {
             continue;
         };
         if whole.start() > cursor {
@@ -85,6 +128,7 @@ pub fn parse_arg(s: &str) -> Vec<Segment> {
         out.push(Segment::Placeholder(PlaceholderRef {
             raw: whole.as_str().to_string(),
             source,
+            mode,
         }));
         cursor = whole.end();
     }
@@ -97,14 +141,23 @@ pub fn parse_arg(s: &str) -> Vec<Segment> {
     out
 }
 
-/// Resolved execution plan: the argv to exec, with placeholder values
-/// substituted in place. Values are bytes (not String) so binary-safe secrets
-/// can flow through unchanged. `secrets` is the deduped set of raw resolved
-/// values, used by the redaction layer to scrub them back out of subprocess
-/// output.
+/// Fully resolved execution plan.
 pub struct Plan {
+    /// argv to exec, after substitution and after directive slots stripped.
     pub argv: Vec<Vec<u8>>,
+    /// Raw resolved secret values (deduped), for the output redaction filter.
     pub secrets: Vec<Vec<u8>>,
+    /// Env vars to set on the subprocess (from `{env-inject:NAME}`).
+    pub env: Vec<(String, Vec<u8>)>,
+    /// Bytes to pipe to subprocess stdin (from `{stdin:NAME}`). None = inherit
+    /// parent stdin.
+    pub stdin: Option<Vec<u8>>,
+    /// Names that used `{argv:NAME}` mode; printed as a one-line stderr
+    /// warning before exec.
+    pub argv_warnings: Vec<String>,
+    /// RAII guards for tempfiles created during plan build. Must outlive the
+    /// subprocess; the exec layer holds the Plan across `wait()`.
+    pub tempfiles: Vec<TempFileGuard>,
 }
 
 pub fn build_plan(argv: &[String], store: &dyn SecretStore) -> Result<Plan> {
@@ -113,9 +166,39 @@ pub fn build_plan(argv: &[String], store: &dyn SecretStore) -> Result<Plan> {
     }
     let parsed: Vec<Vec<Segment>> = argv.iter().map(|a| parse_arg(a)).collect();
 
+    // Validate directive placement before doing any IO.
+    let mut stdin_count = 0;
+    for (i, segs) in parsed.iter().enumerate() {
+        for seg in segs {
+            if let Segment::Placeholder(p) = seg {
+                match p.mode {
+                    Mode::EnvInject | Mode::Stdin => {
+                        if segs.len() != 1 {
+                            bail!(
+                                "`{}` must be a standalone argv element, not embedded in `{}`",
+                                p.raw,
+                                argv[i]
+                            );
+                        }
+                        if p.mode == Mode::Stdin {
+                            stdin_count += 1;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    if stdin_count > 1 {
+        bail!(
+            "at most one `{{stdin:...}}` placeholder per command (found {stdin_count})"
+        );
+    }
+
+    // Resolve unique sources once.
     let mut values: BTreeMap<PlaceholderSource, Vec<u8>> = BTreeMap::new();
-    for arg in &parsed {
-        for seg in arg {
+    for segs in &parsed {
+        for seg in segs {
             if let Segment::Placeholder(p) = seg {
                 if !values.contains_key(&p.source) {
                     let value = resolve(&p.source, store).with_context(|| {
@@ -127,16 +210,86 @@ pub fn build_plan(argv: &[String], store: &dyn SecretStore) -> Result<Plan> {
         }
     }
 
-    let mut out_argv: Vec<Vec<u8>> = Vec::with_capacity(parsed.len());
-    for arg in &parsed {
+    // Tempfile cache: one file per NAME, shared across multiple refs.
+    let mut tempfile_paths: BTreeMap<String, PathBuf> = BTreeMap::new();
+    let mut tempfiles: Vec<TempFileGuard> = Vec::new();
+
+    let mut out_argv: Vec<Vec<u8>> = Vec::new();
+    let mut env: Vec<(String, Vec<u8>)> = Vec::new();
+    let mut stdin: Option<Vec<u8>> = None;
+    let mut argv_warnings: Vec<String> = Vec::new();
+
+    for segs in &parsed {
+        // Directive arg? (whole arg = single env-inject or stdin placeholder)
+        if segs.len() == 1 {
+            if let Segment::Placeholder(p) = &segs[0] {
+                match p.mode {
+                    Mode::EnvInject => {
+                        let name = p
+                            .source
+                            .name()
+                            .expect("env-inject source has a name")
+                            .to_string();
+                        env.push((name, values[&p.source].clone()));
+                        continue;
+                    }
+                    Mode::Stdin => {
+                        stdin = Some(values[&p.source].clone());
+                        continue;
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        // Otherwise: substitute into argv bytes.
         let mut bytes = Vec::new();
-        for seg in arg {
+        for seg in segs {
             match seg {
                 Segment::Literal(s) => bytes.extend_from_slice(s.as_bytes()),
-                Segment::Placeholder(p) => bytes.extend_from_slice(&values[&p.source]),
+                Segment::Placeholder(p) => match p.mode {
+                    Mode::Argv => {
+                        bytes.extend_from_slice(&values[&p.source]);
+                    }
+                    Mode::ArgvExplicit => {
+                        if let Some(name) = p.source.name() {
+                            if !argv_warnings.iter().any(|n| n == name) {
+                                argv_warnings.push(name.to_string());
+                            }
+                        }
+                        bytes.extend_from_slice(&values[&p.source]);
+                    }
+                    Mode::TempFile => {
+                        let name = p
+                            .source
+                            .name()
+                            .expect("tempfile source has a name")
+                            .to_string();
+                        let path = if let Some(p) = tempfile_paths.get(&name) {
+                            p.clone()
+                        } else {
+                            let guard = TempFileGuard::create_with_value(
+                                &name,
+                                &values[&p.source],
+                            )?;
+                            let path = guard.path().to_path_buf();
+                            tempfile_paths.insert(name, path.clone());
+                            tempfiles.push(guard);
+                            path
+                        };
+                        bytes.extend_from_slice(path.as_os_str().as_bytes());
+                    }
+                    Mode::EnvInject | Mode::Stdin => unreachable!(
+                        "directive placeholder reached substitution path (should have been caught by validation)"
+                    ),
+                },
             }
         }
         out_argv.push(bytes);
+    }
+
+    if out_argv.is_empty() {
+        bail!("no command remaining after stripping directive placeholders");
     }
 
     let mut secrets: Vec<Vec<u8>> = values.into_values().filter(|v| !v.is_empty()).collect();
@@ -146,6 +299,10 @@ pub fn build_plan(argv: &[String], store: &dyn SecretStore) -> Result<Plan> {
     Ok(Plan {
         argv: out_argv,
         secrets,
+        env,
+        stdin,
+        argv_warnings,
+        tempfiles,
     })
 }
 
@@ -167,6 +324,17 @@ pub fn enrich_with_store_secrets(plan: &mut Plan, store: &dyn SecretStore) -> Re
     plan.secrets.sort();
     plan.secrets.dedup();
     Ok(())
+}
+
+impl PlaceholderSource {
+    pub fn display(&self) -> String {
+        match self {
+            Self::Default(n) => n.clone(),
+            Self::Keychain(n) => format!("kc:{n}"),
+            Self::Env(n) => format!("env:{n}"),
+            Self::File(p) => format!("file:{}", p.display()),
+        }
+    }
 }
 
 /// For dry-run display: rebuild each argv string with placeholders replaced
@@ -245,16 +413,32 @@ mod tests {
         let ps = placeholders(&segs);
         assert_eq!(ps.len(), 1);
         assert!(matches!(ps[0].source, PlaceholderSource::Default(ref n) if n == "CF_TOKEN"));
+        assert_eq!(ps[0].mode, Mode::Argv);
     }
 
     #[test]
-    fn prefixes_parse() {
+    fn source_prefixes_parse() {
         let segs = parse_arg("{kc:FOO} {env:BAR} {file:/tmp/x}");
         let ps = placeholders(&segs);
         assert_eq!(ps.len(), 3);
         assert!(matches!(ps[0].source, PlaceholderSource::Keychain(_)));
         assert!(matches!(ps[1].source, PlaceholderSource::Env(_)));
         assert!(matches!(ps[2].source, PlaceholderSource::File(_)));
+        assert!(ps.iter().all(|p| p.mode == Mode::Argv));
+    }
+
+    #[test]
+    fn mode_prefixes_parse() {
+        let segs = parse_arg("{argv:A} {env-inject:B} {stdin:C} {tempfile:D}");
+        let ps = placeholders(&segs);
+        assert_eq!(ps.len(), 4);
+        assert_eq!(ps[0].mode, Mode::ArgvExplicit);
+        assert_eq!(ps[1].mode, Mode::EnvInject);
+        assert_eq!(ps[2].mode, Mode::Stdin);
+        assert_eq!(ps[3].mode, Mode::TempFile);
+        for p in &ps {
+            assert!(matches!(p.source, PlaceholderSource::Default(_)));
+        }
     }
 
     #[test]
@@ -275,9 +459,11 @@ mod tests {
             "echo".to_string(),
             "token={CF_TOKEN}".to_string(),
             "{env:HOME}".to_string(),
+            "{env-inject:AWS}".to_string(),
         ]);
         assert_eq!(masked[0], "echo");
         assert_eq!(masked[1], "token=[REDACTED:{CF_TOKEN}]");
         assert_eq!(masked[2], "[REDACTED:{env:HOME}]");
+        assert_eq!(masked[3], "[REDACTED:{env-inject:AWS}]");
     }
 }

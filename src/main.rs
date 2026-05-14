@@ -3,6 +3,7 @@ mod exec;
 mod inject;
 mod redact;
 mod store;
+mod tempfile;
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -38,8 +39,10 @@ fn run_command(args: RunArgs) -> Result<i32> {
     if args.dry_run {
         // Resolve everything (so dry-run doubles as a reachability check),
         // then display the masked argv without ever using the real values.
-        let _plan = inject::build_plan(&args.cmd, &store)?;
-        print_dry_run(&args.cmd);
+        let plan = inject::build_plan(&args.cmd, &store)?;
+        print_dry_run(&args.cmd, &plan);
+        // RAII tempfiles drop here — they existed for milliseconds.
+        drop(plan);
         Ok(0)
     } else {
         let mut plan = inject::build_plan(&args.cmd, &store)?;
@@ -47,16 +50,41 @@ fn run_command(args: RunArgs) -> Result<i32> {
         if redact && !plan.secrets.is_empty() {
             inject::enrich_with_store_secrets(&mut plan, &store)?;
         }
+        if !plan.argv_warnings.is_empty() {
+            eprintln!(
+                "[shtum] warning: {{argv:...}} substituted into argv — value(s) for {} \
+                 will be visible in `ps` output while the subprocess runs",
+                plan.argv_warnings.join(", ")
+            );
+        }
         exec::run_plan(plan, redact)
     }
 }
 
-fn print_dry_run(original_argv: &[String]) {
+fn print_dry_run(original_argv: &[String], plan: &inject::Plan) {
     let masked = inject::format_masked(original_argv);
     eprintln!("[shtum] dry-run: would exec (values masked):");
     for (i, arg) in masked.iter().enumerate() {
         let prefix = if i == 0 { "  " } else { "    " };
         eprintln!("{prefix}{arg}");
+    }
+    if !plan.env.is_empty() {
+        eprintln!("  env:");
+        for (k, _) in &plan.env {
+            eprintln!("    {k}=[REDACTED]");
+        }
+    }
+    if plan.stdin.is_some() {
+        eprintln!("  stdin: [REDACTED] (piped to subprocess)");
+    }
+    if !plan.tempfiles.is_empty() {
+        eprintln!("  tempfiles ({}): created mode 0600 in $TMPDIR", plan.tempfiles.len());
+    }
+    if !plan.argv_warnings.is_empty() {
+        eprintln!(
+            "  warning: {{argv:...}} substituted for {} — visible in `ps`",
+            plan.argv_warnings.join(", ")
+        );
     }
 }
 
