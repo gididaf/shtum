@@ -1,9 +1,6 @@
 //! HTML rendering for the dashboard. Server-rendered, no template engine,
 //! no SPA — page strings are assembled from `format!()` with all
 //! interpolated user content passed through [`escape`].
-//!
-//! P-D2 milestone: read-only list view + hook snippets. Mutation forms and
-//! reveal UI arrive in P-D3 / P-D4.
 
 /// HTML-escape the five characters that have semantic meaning in HTML5
 /// element bodies and double/single-quoted attribute values: `& < > " '`.
@@ -31,36 +28,62 @@ pub fn escape(s: &str) -> String {
     out
 }
 
-/// Render the dashboard index. Caller passes the already-sorted list of
-/// stored secret names, the session token (for future form actions — not
-/// used yet in P-D2 since this page is read-only), the absolute shtum
-/// binary path (for the hook-install snippets), and an optional flash
-/// message to display at the top.
+/// Severity hint for the flash banner.
+#[derive(Debug, Clone, Copy)]
+pub enum FlashKind {
+    Info,
+    Error,
+}
+
+pub struct Flash<'a> {
+    pub kind: FlashKind,
+    pub message: &'a str,
+}
+
+/// Render the dashboard index. The session token is embedded in every
+/// form as a hidden field so each POST can be verified server-side
+/// without relying on cookies.
 pub fn list_page(
     secrets: &[String],
-    _token: &str,
+    token: &str,
     shtum_path: &str,
-    flash: Option<&str>,
+    flash: Option<Flash<'_>>,
 ) -> String {
     let flash_html = flash
-        .map(|m| format!(r#"<div class="flash">{}</div>"#, escape(m)))
+        .map(|f| {
+            let class = match f.kind {
+                FlashKind::Info => "flash",
+                FlashKind::Error => "flash error",
+            };
+            format!(r#"<div class="{}">{}</div>"#, class, escape(f.message))
+        })
         .unwrap_or_default();
 
+    let token_esc = escape(token);
+
+    let add_form = format!(
+        r#"<form class="add-form" action="/secrets/add" method="post" autocomplete="off">
+<input type="hidden" name="token" value="{token}">
+<label>Name <input type="text" name="name" placeholder="MY_SECRET" required pattern="[A-Za-z0-9_.\-]+"></label>
+<label>Value <input type="password" name="value" placeholder="(hidden)" required></label>
+<button type="submit">Add</button>
+</form>"#,
+        token = token_esc,
+    );
+
     let secrets_section = if secrets.is_empty() {
-        r#"<p class="muted">No secrets stored yet. Add one with <code>shtum store add &lt;NAME&gt;</code> from your terminal.</p>"#
-            .to_string()
+        format!(
+            r#"<p class="muted">No secrets stored yet. Add one above, or via <code>shtum store add &lt;NAME&gt;</code> from your terminal.</p>
+{add_form}"#,
+        )
     } else {
         let rows: String = secrets
             .iter()
-            .map(|name| {
-                format!(
-                    r#"<tr><td class="name">{}</td><td class="actions muted">(actions in next phase)</td></tr>"#,
-                    escape(name),
-                )
-            })
+            .map(|name| render_secret_row(name, &token_esc))
             .collect();
         format!(
-            r#"<table class="secrets">
+            r#"{add_form}
+<table class="secrets">
 <thead><tr><th>Name</th><th>Actions</th></tr></thead>
 <tbody>
 {rows}
@@ -87,13 +110,23 @@ body {{ font-family: -apple-system, BlinkMacSystemFont, sans-serif; max-width: 9
 h1 {{ margin-top: 0; }}
 h2 {{ margin-top: 2.5rem; border-bottom: 1px solid #ddd; padding-bottom: 0.25rem; }}
 table.secrets {{ width: 100%; border-collapse: collapse; margin-top: 0.5rem; }}
-table.secrets th, table.secrets td {{ text-align: left; padding: 0.5rem 0.75rem; border-bottom: 1px solid #eee; }}
+table.secrets th, table.secrets td {{ text-align: left; padding: 0.5rem 0.75rem; border-bottom: 1px solid #eee; vertical-align: middle; }}
 table.secrets th {{ font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.05em; color: #555; }}
 td.name {{ font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }}
+td.actions {{ display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; }}
 .muted {{ color: #888; }}
 pre.snippet {{ background: #f5f5f5; border: 1px solid #e0e0e0; padding: 0.75rem 1rem; border-radius: 4px; overflow-x: auto; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.9rem; }}
 .flash {{ background: #fff8c4; border: 1px solid #e6d878; padding: 0.5rem 0.75rem; border-radius: 4px; margin-bottom: 1rem; }}
+.flash.error {{ background: #fde4e4; border-color: #e3a0a0; color: #802020; }}
 .hint {{ color: #555; font-size: 0.9rem; }}
+form.add-form {{ background: #f8f8f8; padding: 0.75rem 1rem; border-radius: 4px; margin: 0.5rem 0 1rem; display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap; }}
+form.add-form label {{ display: flex; gap: 0.25rem; align-items: center; font-size: 0.9rem; color: #444; }}
+form.inline {{ display: inline-flex; gap: 0.25rem; align-items: center; margin: 0; }}
+input[type=text], input[type=password] {{ padding: 0.3rem 0.5rem; border: 1px solid #ccc; border-radius: 3px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.9rem; }}
+button {{ padding: 0.3rem 0.8rem; border: 1px solid #888; background: #f7f7f7; cursor: pointer; border-radius: 3px; font-size: 0.85rem; color: #222; }}
+button:hover {{ background: #ececec; }}
+button.danger {{ color: #802020; border-color: #d99; background: #fff5f5; }}
+button.danger:hover {{ background: #fde4e4; }}
 </style>
 </head>
 <body>
@@ -117,6 +150,32 @@ pre.snippet {{ background: #f5f5f5; border: 1px solid #e0e0e0; padding: 0.75rem 
 </html>"#,
         escape(&global_cmd),
         escape(&project_cmd),
+    )
+}
+
+/// Render a single `<tr>` for a secret. The delete button uses an inline
+/// `onsubmit="return confirm(...)"` so a stray click can't wipe a secret
+/// without the user explicitly approving the prompt — inline-script CSP is
+/// already opened up for this and the reveal/copy JS that lands in P-D4.
+fn render_secret_row(name: &str, token_esc: &str) -> String {
+    let name_esc = escape(name);
+    let confirm_msg = escape(&format!(
+        "Delete \"{name}\" from the Keychain? This cannot be undone.",
+    ));
+    format!(
+        r#"<tr><td class="name">{name_esc}</td><td class="actions">
+<form class="inline" action="/secrets/{name_esc}/rotate" method="post" autocomplete="off">
+<input type="hidden" name="token" value="{token_esc}">
+<input type="hidden" name="name" value="{name_esc}">
+<input type="password" name="value" placeholder="new value" required>
+<button type="submit">Rotate</button>
+</form>
+<form class="inline" action="/secrets/{name_esc}/delete" method="post" onsubmit="return confirm('{confirm_msg}');">
+<input type="hidden" name="token" value="{token_esc}">
+<input type="hidden" name="name" value="{name_esc}">
+<button type="submit" class="danger">Delete</button>
+</form>
+</td></tr>"#,
     )
 }
 
@@ -149,7 +208,6 @@ mod tests {
         assert_eq!(escape("a & b"), "a &amp; b");
         assert_eq!(escape(r#"say "hi""#), "say &quot;hi&quot;");
         assert_eq!(escape("it's"), "it&#39;s");
-        // All five together.
         assert_eq!(
             escape(r#"<a href="x" title='y'>&"#),
             "&lt;a href=&quot;x&quot; title=&#39;y&#39;&gt;&amp;",
@@ -158,8 +216,6 @@ mod tests {
 
     #[test]
     fn escape_amp_first_prevents_double_encoding() {
-        // If `<` were replaced before `&`, `<` → `&lt;` → `&amp;lt;`. Test
-        // the canonical example.
         assert_eq!(escape("&lt;"), "&amp;lt;");
     }
 
@@ -171,23 +227,39 @@ mod tests {
     }
 
     #[test]
-    fn list_page_empty_state_renders_friendly_message() {
+    fn list_page_empty_state_renders_friendly_message_and_add_form() {
         let html = list_page(&[], "tok", "/usr/local/bin/shtum", None);
         assert!(html.contains("No secrets stored yet"));
         assert!(!html.contains("<tbody>"));
+        assert!(html.contains(r#"action="/secrets/add""#));
     }
 
     #[test]
-    fn list_page_renders_secret_names_escaped() {
-        // Names are restricted by the store validator to [A-Za-z0-9_.-] so
-        // the metachars never appear in practice — but we escape defensively
-        // and a unit test pins that behaviour in case the validator ever
-        // loosens.
+    fn list_page_renders_per_row_rotate_and_delete_forms() {
         let names = vec!["AWS_KEY".to_string(), "GH_TOKEN".to_string()];
         let html = list_page(&names, "tok", "/usr/local/bin/shtum", None);
-        assert!(html.contains("AWS_KEY"));
-        assert!(html.contains("GH_TOKEN"));
-        assert!(html.contains("<tbody>"));
+        assert!(html.contains(r#"action="/secrets/AWS_KEY/rotate""#));
+        assert!(html.contains(r#"action="/secrets/AWS_KEY/delete""#));
+        assert!(html.contains(r#"action="/secrets/GH_TOKEN/rotate""#));
+        assert!(html.contains(r#"action="/secrets/GH_TOKEN/delete""#));
+    }
+
+    #[test]
+    fn list_page_embeds_token_in_every_form() {
+        let names = vec!["FOO".to_string()];
+        let html = list_page(&names, "TESTTOKEN", "/usr/local/bin/shtum", None);
+        // Add form, rotate form, delete form — three hidden token inputs
+        // (plus one for any flash, but flash doesn't contain it).
+        let count = html.matches(r#"name="token" value="TESTTOKEN""#).count();
+        assert_eq!(count, 3, "expected 3 hidden token inputs, found {count}");
+    }
+
+    #[test]
+    fn list_page_delete_form_has_confirm() {
+        let names = vec!["DANGEROUS".to_string()];
+        let html = list_page(&names, "tok", "/usr/local/bin/shtum", None);
+        assert!(html.contains(r#"onsubmit="return confirm("#));
+        assert!(html.contains("DANGEROUS"));
     }
 
     #[test]
@@ -199,18 +271,25 @@ mod tests {
 
     #[test]
     fn list_page_escapes_shtum_path_with_meta() {
-        // Defensive: in the (silly) case where the binary lives at a path
-        // with HTML metachars, we don't break out of the <pre> block.
         let html = list_page(&[], "tok", "/weird/<path>/shtum", None);
         assert!(!html.contains("/weird/<path>/shtum"));
         assert!(html.contains("/weird/&lt;path&gt;/shtum"));
     }
 
     #[test]
-    fn list_page_renders_flash_when_present() {
-        let html = list_page(&[], "tok", "/usr/local/bin/shtum", Some("rotated FOO"));
+    fn list_page_renders_info_flash() {
+        let flash = Flash { kind: FlashKind::Info, message: "stored FOO" };
+        let html = list_page(&[], "tok", "/usr/local/bin/shtum", Some(flash));
         assert!(html.contains(r#"class="flash""#));
-        assert!(html.contains("rotated FOO"));
+        assert!(html.contains("stored FOO"));
+    }
+
+    #[test]
+    fn list_page_renders_error_flash_with_distinct_class() {
+        let flash = Flash { kind: FlashKind::Error, message: "name rejected" };
+        let html = list_page(&[], "tok", "/usr/local/bin/shtum", Some(flash));
+        assert!(html.contains(r#"class="flash error""#));
+        assert!(html.contains("name rejected"));
     }
 
     #[test]
