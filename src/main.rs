@@ -1,4 +1,6 @@
 mod cli;
+mod exec;
+mod inject;
 mod store;
 
 use anyhow::{Context, Result};
@@ -6,13 +8,50 @@ use clap::Parser;
 use std::io::{IsTerminal, Read};
 use std::path::Path;
 
-use crate::cli::{AddArgs, Cli, Command, StoreAction};
+use crate::cli::{AddArgs, Cli, Command, RunArgs, StoreAction};
+use crate::inject::Plan;
 use crate::store::{SecretStore, StoreError, default_store, validate_name};
 
-fn main() -> Result<()> {
+fn main() {
+    match real_main() {
+        Ok(code) => std::process::exit(code),
+        Err(e) => {
+            eprintln!("error: {e:#}");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn real_main() -> Result<i32> {
     let args = Cli::parse();
     match args.command {
-        Command::Store { action } => run_store(action),
+        Command::Store { action } => {
+            run_store(action)?;
+            Ok(0)
+        }
+        Command::Run(args) => run_command(args),
+    }
+}
+
+fn run_command(args: RunArgs) -> Result<i32> {
+    let store = default_store();
+    let plan = inject::build_plan(&args.cmd, &store)?;
+    if args.dry_run {
+        print_dry_run(&plan);
+        Ok(0)
+    } else {
+        exec::run_plan(plan)
+    }
+}
+
+fn print_dry_run(plan: &Plan) {
+    eprintln!("[shtum] dry-run: would execute via `sh -c`:");
+    eprintln!("  {}", plan.shell_cmd);
+    if !plan.var_refs.is_empty() {
+        eprintln!("with environment:");
+        for (var, refn) in &plan.var_refs {
+            eprintln!("  {}=[REDACTED:{}]", var, refn.raw);
+        }
     }
 }
 

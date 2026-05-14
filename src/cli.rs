@@ -23,6 +23,31 @@ pub enum Command {
         #[command(subcommand)]
         action: StoreAction,
     },
+    /// Run a command, resolving `{NAME}` placeholders from the secret store.
+    ///
+    /// Inline placeholders are injected via the shell environment (not argv) so
+    /// the literal secret value does not appear in `ps aux`. Use
+    /// `shtum run -- <command...>`; everything after `--` is the wrapped command.
+    Run(RunArgs),
+}
+
+#[derive(clap::Args, Debug)]
+pub struct RunArgs {
+    /// Don't actually execute. Print the rewritten invocation and the env-var
+    /// assignments, with secret values shown as `[REDACTED:<placeholder>]`.
+    /// Still resolves all placeholders, so this doubles as a "are my secrets
+    /// reachable?" check.
+    #[arg(long)]
+    pub dry_run: bool,
+
+    /// The command and its arguments, with placeholder references.
+    #[arg(
+        trailing_var_arg = true,
+        allow_hyphen_values = true,
+        required = true,
+        num_args = 1..,
+    )]
+    pub cmd: Vec<String>,
 }
 
 #[derive(Subcommand, Debug)]
