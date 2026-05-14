@@ -67,6 +67,10 @@ The auto-redact filter holds back the last `max(layer-A max, 4096)` bytes per st
 
 A determined wrapped command can leak data via DNS lookups, custom binary protocols, timing channels, etc. `shtum` only filters the captured stdout/stderr of the subprocess. Any data the subprocess sends elsewhere is invisible to the filter.
 
+### Same-user processes connecting to the running dashboard
+
+While `shtum dashboard` is running, its TCP socket on `127.0.0.1:<port>` is reachable by any process owned by your user. The 192-bit session token makes brute-force authentication computationally infeasible, but the *socket* is open. This is a wider surface than the CLI, which has no listener. The dashboard is opt-in (you run it explicitly) and process-scoped (Ctrl+C invalidates the token); see [`dashboard.md`](./dashboard.md) for the full breakdown of what the dashboard protects against and what it does not.
+
 ### The agent already has the secret in context
 
 If you pasted a secret into the conversation before installing `shtum`, or if it was read from a file the agent already saw, the damage is already done — the value is in the agent's context window and has already been sent to the provider. `shtum` protects values that **only** live in Keychain. Keep secrets out of the conversation upstream.

@@ -122,6 +122,17 @@ The hook auto-wraps commands containing `{...}` placeholders, refuses bare invoc
 
 See [`docs/claude-code-integration.md`](./docs/claude-code-integration.md) for the full walkthrough and the recommended `CLAUDE.md` snippet to add to *your* projects so Claude knows about placeholders.
 
+## Dashboard
+
+```bash
+shtum dashboard               # random free port
+shtum dashboard --port 8080   # explicit port; PORT env also works
+```
+
+Prints a `http://127.0.0.1:<port>/?token=<...>` URL on stderr and serves a small web UI for adding / rotating / deleting / revealing secrets and grabbing copy-paste hook-install commands. Bound to 127.0.0.1 only and gated by a per-launch 192-bit session token (a fresh one every run). Ctrl+C stops the server and invalidates the token.
+
+The dashboard is a convenience layer — anything it does, the CLI can do too. See [`docs/dashboard.md`](./docs/dashboard.md) for the full threat model and what it protects against versus what it does not.
+
 ## Recipes
 
 [`docs/cookbook.md`](./docs/cookbook.md) has copy-paste recipes for Cloudflare API, GitHub, AWS, psql, MySQL, SSH, and others.

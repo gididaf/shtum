@@ -2,6 +2,20 @@
 
 All notable changes to `shtum` are recorded here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning follows [SemVer](https://semver.org/) once a public release ships.
 
+## [Unreleased]
+
+### Added
+
+- **`shtum dashboard`** — local web UI for Keychain CRUD and hook-install snippet copy-paste.
+  - `--port <PORT>` flag, `PORT` env var; defaults to a random free port chosen by the OS (precedence: flag > env > random).
+  - Binds 127.0.0.1 only. Per-launch 192-bit session token from `/dev/urandom`, base64-URL-encoded; printed in the launch URL on stderr. Token verification is constant-time. Strict `Host:` header check (`127.0.0.1:<port>` or `localhost:<port>` only) blocks DNS-rebinding.
+  - GET `/` renders the secret list + Add form + per-row Rotate/Delete forms + ready-to-copy hook-install snippets (global and per-project). GET `/secrets/<name>/reveal?token=...` returns the value as `text/plain; charset=utf-8` (rendered inline via `textContent`, auto-hides after 30s). POST `/secrets/add` / `/secrets/<name>/rotate` / `/secrets/<name>/delete` validate the token from the form body, reject non-`application/x-www-form-urlencoded` requests with 415, cap body size at 64 KiB (413 otherwise), and 303-redirect to `/` with a flash query param on success or validation failure.
+  - Locked-down CSP (`default-src 'none'` + explicit allows for `script-src`, `style-src`, `connect-src`, `form-action` — all `'self'` or `'unsafe-inline'`; `frame-ancestors 'none'`; `base-uri 'none'`). `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, `Cache-Control: no-store` on every response.
+  - One-line stderr access log per request: `[shtum dashboard] METHOD path STATUS`. Token query values are redacted to `[REDACTED]`; request bodies and reveal response bodies are never logged.
+  - Strict urlencoded form parser rejects duplicate keys (no `token=evil&token=good` smuggling).
+  - The dashboard itself never modifies Claude settings. Hook snippets are static copy-paste text.
+- **`docs/dashboard.md`** — full threat model + operational notes for the dashboard.
+
 ## [0.1.0] — 2026-05-14
 
 First working version. macOS only. Not yet published to package registries; build from source.
@@ -50,4 +64,5 @@ First working version. macOS only. Not yet published to package registries; buil
 - **Interactive/PTY** support deferred to v2.
 - **Config file** deferred to v2 (flag-driven only in v1).
 
+[Unreleased]: #unreleased
 [0.1.0]: #010--2026-05-14
