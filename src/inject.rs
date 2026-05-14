@@ -20,7 +20,6 @@ pub enum PlaceholderSource {
 }
 
 impl PlaceholderSource {
-    /// Human-readable form used in error messages and dry-run output.
     pub fn display(&self) -> String {
         match self {
             Self::Default(n) => n.clone(),
@@ -29,26 +28,6 @@ impl PlaceholderSource {
             Self::File(p) => format!("file:{}", p.display()),
         }
     }
-
-    fn var_basename(&self) -> String {
-        match self {
-            Self::Default(n) | Self::Keychain(n) => sanitize(n),
-            Self::Env(n) => format!("ENV_{}", sanitize(n)),
-            Self::File(_) => "FILE".to_string(),
-        }
-    }
-}
-
-fn sanitize(name: &str) -> String {
-    name.chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() {
-                c.to_ascii_uppercase()
-            } else {
-                '_'
-            }
-        })
-        .collect()
 }
 
 #[derive(Clone, Debug)]
@@ -71,27 +50,15 @@ fn placeholder_regex() -> &'static Regex {
 
 fn classify(inner: &str) -> Option<PlaceholderSource> {
     if let Some(rest) = inner.strip_prefix("kc:") {
-        if is_valid_name(rest) {
-            return Some(PlaceholderSource::Keychain(rest.to_string()));
-        }
-        return None;
+        return is_valid_name(rest).then(|| PlaceholderSource::Keychain(rest.to_string()));
     }
     if let Some(rest) = inner.strip_prefix("env:") {
-        if is_valid_name(rest) {
-            return Some(PlaceholderSource::Env(rest.to_string()));
-        }
-        return None;
+        return is_valid_name(rest).then(|| PlaceholderSource::Env(rest.to_string()));
     }
     if let Some(rest) = inner.strip_prefix("file:") {
-        if !rest.is_empty() {
-            return Some(PlaceholderSource::File(PathBuf::from(rest)));
-        }
-        return None;
+        return (!rest.is_empty()).then(|| PlaceholderSource::File(PathBuf::from(rest)));
     }
-    if is_valid_name(inner) {
-        return Some(PlaceholderSource::Default(inner.to_string()));
-    }
-    None
+    is_valid_name(inner).then(|| PlaceholderSource::Default(inner.to_string()))
 }
 
 fn is_valid_name(s: &str) -> bool {
@@ -130,12 +97,11 @@ pub fn parse_arg(s: &str) -> Vec<Segment> {
     out
 }
 
-/// Fully-baked execution plan: the `sh -c` command line, the env vars to set,
-/// and a mapping from var name to a representative placeholder ref (for dry-run).
+/// Resolved execution plan: the argv to exec, with placeholder values
+/// substituted in place. Values are bytes (not String) so binary-safe secrets
+/// can flow through unchanged.
 pub struct Plan {
-    pub shell_cmd: String,
-    pub env: Vec<(String, Vec<u8>)>,
-    pub var_refs: Vec<(String, PlaceholderRef)>,
+    pub argv: Vec<Vec<u8>>,
 }
 
 pub fn build_plan(argv: &[String], store: &dyn SecretStore) -> Result<Plan> {
@@ -144,94 +110,55 @@ pub fn build_plan(argv: &[String], store: &dyn SecretStore) -> Result<Plan> {
     }
     let parsed: Vec<Vec<Segment>> = argv.iter().map(|a| parse_arg(a)).collect();
 
-    let mut sources_in_order: Vec<PlaceholderSource> = Vec::new();
-    let mut representative: BTreeMap<PlaceholderSource, PlaceholderRef> = BTreeMap::new();
+    let mut values: BTreeMap<PlaceholderSource, Vec<u8>> = BTreeMap::new();
     for arg in &parsed {
         for seg in arg {
             if let Segment::Placeholder(p) = seg {
-                if !representative.contains_key(&p.source) {
-                    sources_in_order.push(p.source.clone());
-                    representative.insert(p.source.clone(), p.clone());
+                if !values.contains_key(&p.source) {
+                    let value = resolve(&p.source, store).with_context(|| {
+                        format!("resolving placeholder `{}`", p.source.display())
+                    })?;
+                    values.insert(p.source.clone(), value);
                 }
             }
         }
     }
 
-    let mut var_for: BTreeMap<PlaceholderSource, String> = BTreeMap::new();
-    let mut used: Vec<String> = Vec::new();
-    for source in &sources_in_order {
-        let base = source.var_basename();
-        let mut candidate = format!("__SHTUM_{base}");
-        let mut suffix = 1;
-        while used.contains(&candidate) {
-            suffix += 1;
-            candidate = format!("__SHTUM_{base}_{suffix}");
+    let mut out_argv: Vec<Vec<u8>> = Vec::with_capacity(parsed.len());
+    for arg in &parsed {
+        let mut bytes = Vec::new();
+        for seg in arg {
+            match seg {
+                Segment::Literal(s) => bytes.extend_from_slice(s.as_bytes()),
+                Segment::Placeholder(p) => bytes.extend_from_slice(&values[&p.source]),
+            }
         }
-        used.push(candidate.clone());
-        var_for.insert(source.clone(), candidate);
+        out_argv.push(bytes);
     }
 
-    let mut tokens = Vec::with_capacity(parsed.len());
-    for segs in &parsed {
-        tokens.push(quote_token(segs, &var_for));
-    }
-    let shell_cmd = tokens.join(" ");
-
-    let mut env: Vec<(String, Vec<u8>)> = Vec::new();
-    let mut var_refs: Vec<(String, PlaceholderRef)> = Vec::new();
-    for source in &sources_in_order {
-        let var = var_for[source].clone();
-        let value = resolve(source, store)
-            .with_context(|| format!("resolving placeholder `{}`", source.display()))?;
-        env.push((var.clone(), value));
-        var_refs.push((var, representative[source].clone()));
-    }
-
-    Ok(Plan {
-        shell_cmd,
-        env,
-        var_refs,
-    })
+    Ok(Plan { argv: out_argv })
 }
 
-fn quote_token(segments: &[Segment], var_for: &BTreeMap<PlaceholderSource, String>) -> String {
-    let mut out = String::new();
-    for seg in segments {
-        match seg {
-            Segment::Literal(s) => {
-                if !s.is_empty() {
-                    out.push_str(&shell_escape_literal(s));
+/// For dry-run display: rebuild each argv string with placeholders replaced
+/// by `[REDACTED:<raw>]` markers, never touching real secret values.
+pub fn format_masked(argv: &[String]) -> Vec<String> {
+    argv.iter()
+        .map(|a| {
+            let segs = parse_arg(a);
+            let mut out = String::new();
+            for seg in segs {
+                match seg {
+                    Segment::Literal(s) => out.push_str(&s),
+                    Segment::Placeholder(p) => {
+                        out.push_str("[REDACTED:");
+                        out.push_str(&p.raw);
+                        out.push(']');
+                    }
                 }
             }
-            Segment::Placeholder(p) => {
-                let var = &var_for[&p.source];
-                out.push('"');
-                out.push('$');
-                out.push('{');
-                out.push_str(var);
-                out.push('}');
-                out.push('"');
-            }
-        }
-    }
-    if out.is_empty() {
-        out.push_str("''");
-    }
-    out
-}
-
-fn shell_escape_literal(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 2);
-    out.push('\'');
-    for ch in s.chars() {
-        if ch == '\'' {
-            out.push_str("'\\''");
-        } else {
-            out.push(ch);
-        }
-    }
-    out.push('\'');
-    out
+            out
+        })
+        .collect()
 }
 
 pub fn resolve(source: &PlaceholderSource, store: &dyn SecretStore) -> Result<Vec<u8>> {
@@ -313,20 +240,14 @@ mod tests {
     }
 
     #[test]
-    fn shell_escape_single_quote() {
-        assert_eq!(shell_escape_literal("hello"), "'hello'");
-        assert_eq!(shell_escape_literal("it's"), "'it'\\''s'");
-    }
-
-    #[test]
-    fn quote_token_mixed_segments() {
-        let mut var_for = BTreeMap::new();
-        var_for.insert(
-            PlaceholderSource::Default("T".into()),
-            "__SHTUM_T".to_string(),
-        );
-        let segs = parse_arg("pre {T} post");
-        let out = quote_token(&segs, &var_for);
-        assert_eq!(out, r#"'pre '"${__SHTUM_T}"' post'"#);
+    fn format_masked_replaces_placeholders() {
+        let masked = format_masked(&[
+            "echo".to_string(),
+            "token={CF_TOKEN}".to_string(),
+            "{env:HOME}".to_string(),
+        ]);
+        assert_eq!(masked[0], "echo");
+        assert_eq!(masked[1], "token=[REDACTED:{CF_TOKEN}]");
+        assert_eq!(masked[2], "[REDACTED:{env:HOME}]");
     }
 }

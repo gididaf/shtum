@@ -9,7 +9,6 @@ use std::io::{IsTerminal, Read};
 use std::path::Path;
 
 use crate::cli::{AddArgs, Cli, Command, RunArgs, StoreAction};
-use crate::inject::Plan;
 use crate::store::{SecretStore, StoreError, default_store, validate_name};
 
 fn main() {
@@ -35,23 +34,24 @@ fn real_main() -> Result<i32> {
 
 fn run_command(args: RunArgs) -> Result<i32> {
     let store = default_store();
-    let plan = inject::build_plan(&args.cmd, &store)?;
     if args.dry_run {
-        print_dry_run(&plan);
+        // Resolve everything (so dry-run doubles as a reachability check),
+        // then display the masked argv without ever using the real values.
+        let _plan = inject::build_plan(&args.cmd, &store)?;
+        print_dry_run(&args.cmd);
         Ok(0)
     } else {
+        let plan = inject::build_plan(&args.cmd, &store)?;
         exec::run_plan(plan)
     }
 }
 
-fn print_dry_run(plan: &Plan) {
-    eprintln!("[shtum] dry-run: would execute via `sh -c`:");
-    eprintln!("  {}", plan.shell_cmd);
-    if !plan.var_refs.is_empty() {
-        eprintln!("with environment:");
-        for (var, refn) in &plan.var_refs {
-            eprintln!("  {}=[REDACTED:{}]", var, refn.raw);
-        }
+fn print_dry_run(original_argv: &[String]) {
+    let masked = inject::format_masked(original_argv);
+    eprintln!("[shtum] dry-run: would exec (values masked):");
+    for (i, arg) in masked.iter().enumerate() {
+        let prefix = if i == 0 { "  " } else { "    " };
+        eprintln!("{prefix}{arg}");
     }
 }
 
