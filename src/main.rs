@@ -1,4 +1,5 @@
 mod cli;
+mod dashboard;
 mod exec;
 mod hook;
 mod inject;
@@ -11,7 +12,7 @@ use clap::Parser;
 use std::io::{IsTerminal, Read};
 use std::path::Path;
 
-use crate::cli::{AddArgs, Cli, Command, HookAction, RunArgs, StoreAction};
+use crate::cli::{AddArgs, Cli, Command, DashboardArgs, HookAction, RunArgs, StoreAction};
 use crate::hook::Scope;
 use crate::store::{SecretStore, StoreError, default_store, validate_name};
 
@@ -34,7 +35,12 @@ fn real_main() -> Result<i32> {
         }
         Command::Run(args) => run_command(args),
         Command::Hook { action } => run_hook(action),
+        Command::Dashboard(args) => run_dashboard(args),
     }
+}
+
+fn run_dashboard(args: DashboardArgs) -> Result<i32> {
+    dashboard::run(dashboard::DashboardOpts { port: args.port })
 }
 
 fn run_hook(action: HookAction) -> Result<i32> {

@@ -34,6 +34,19 @@ pub enum Command {
         #[command(subcommand)]
         action: HookAction,
     },
+    /// Serve a local web dashboard for managing stored secrets and viewing
+    /// hook-install snippets. Binds to 127.0.0.1 only; access is gated by a
+    /// random token printed at startup. Runs until Ctrl+C.
+    Dashboard(DashboardArgs),
+}
+
+#[derive(clap::Args, Debug)]
+pub struct DashboardArgs {
+    /// TCP port to bind on 127.0.0.1. Defaults to a random free port chosen
+    /// by the OS. Also accepts the PORT environment variable; the flag wins
+    /// when both are set.
+    #[arg(long, value_name = "PORT")]
+    pub port: Option<u16>,
 }
 
 #[derive(Subcommand, Debug)]
