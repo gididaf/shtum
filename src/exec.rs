@@ -35,6 +35,7 @@ pub fn run_plan(
         stdin,
         argv_warnings: _,
         tempfiles,
+        already_fetched_keychain_names: _,
     } = plan;
     let mut iter = argv.into_iter();
     let program = iter.next().context("empty argv after placeholder expansion")?;

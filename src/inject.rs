@@ -109,6 +109,16 @@ fn is_valid_name(s: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.')
 }
 
+/// Return true if `s` contains at least one valid shtum placeholder. Used
+/// by the Claude Code hook to decide whether a Bash command needs to be
+/// wrapped through `shtum run`. JSON literals like `{"foo": "bar"}` do not
+/// count.
+pub fn contains_placeholder(s: &str) -> bool {
+    parse_arg(s)
+        .iter()
+        .any(|seg| matches!(seg, Segment::Placeholder(_)))
+}
+
 /// Parse a single argv string into a sequence of literal and placeholder
 /// segments. Non-placeholder `{...}` content (e.g. JSON literals) is
 /// preserved as literal text.
@@ -158,6 +168,10 @@ pub struct Plan {
     /// RAII guards for tempfiles created during plan build. Must outlive the
     /// subprocess; the exec layer holds the Plan across `wait()`.
     pub tempfiles: Vec<TempFileGuard>,
+    /// Keychain names that `build_plan` already fetched (from
+    /// `{NAME}`-style references). `enrich_with_store_secrets` skips these
+    /// so the user doesn't get prompted twice for the same item.
+    pub already_fetched_keychain_names: Vec<String>,
 }
 
 pub fn build_plan(argv: &[String], store: &dyn SecretStore) -> Result<Plan> {
@@ -292,6 +306,16 @@ pub fn build_plan(argv: &[String], store: &dyn SecretStore) -> Result<Plan> {
         bail!("no command remaining after stripping directive placeholders");
     }
 
+    let mut already_fetched_keychain_names: Vec<String> = values
+        .keys()
+        .filter_map(|src| match src {
+            PlaceholderSource::Default(n) | PlaceholderSource::Keychain(n) => Some(n.clone()),
+            _ => None,
+        })
+        .collect();
+    already_fetched_keychain_names.sort();
+    already_fetched_keychain_names.dedup();
+
     let mut secrets: Vec<Vec<u8>> = values.into_values().filter(|v| !v.is_empty()).collect();
     secrets.sort();
     secrets.dedup();
@@ -303,18 +327,29 @@ pub fn build_plan(argv: &[String], store: &dyn SecretStore) -> Result<Plan> {
         stdin,
         argv_warnings,
         tempfiles,
+        already_fetched_keychain_names,
     })
 }
 
 /// When at least one placeholder resolved, also fold every other stored
 /// secret into the redaction set, so a forgotten `{NAME}` doesn't let a
-/// stored value slip through. Failures to load individual entries print a
-/// warning but do not abort the run.
+/// stored value slip through. Skips names that `build_plan` already fetched
+/// so the user isn't prompted twice by the Keychain ACL for the same item.
+/// Failures to load individual entries print a warning but do not abort the
+/// run.
 pub fn enrich_with_store_secrets(plan: &mut Plan, store: &dyn SecretStore) -> Result<()> {
+    let already: std::collections::BTreeSet<&str> = plan
+        .already_fetched_keychain_names
+        .iter()
+        .map(|s| s.as_str())
+        .collect();
     let names = store
         .list()
         .context("failed to enumerate stored secrets for redaction")?;
     for name in names {
+        if already.contains(name.as_str()) {
+            continue;
+        }
         match store.get(&name) {
             Ok(v) if !v.is_empty() => plan.secrets.push(v),
             Ok(_) => {}

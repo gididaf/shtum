@@ -1,5 +1,6 @@
 mod cli;
 mod exec;
+mod hook;
 mod inject;
 mod redact;
 mod store;
@@ -10,7 +11,8 @@ use clap::Parser;
 use std::io::{IsTerminal, Read};
 use std::path::Path;
 
-use crate::cli::{AddArgs, Cli, Command, RunArgs, StoreAction};
+use crate::cli::{AddArgs, Cli, Command, HookAction, RunArgs, StoreAction};
+use crate::hook::Scope;
 use crate::store::{SecretStore, StoreError, default_store, validate_name};
 
 fn main() {
@@ -31,6 +33,27 @@ fn real_main() -> Result<i32> {
             Ok(0)
         }
         Command::Run(args) => run_command(args),
+        Command::Hook { action } => run_hook(action),
+    }
+}
+
+fn run_hook(action: HookAction) -> Result<i32> {
+    match action {
+        HookAction::Install(args) => {
+            let scope = if args.project { Scope::Project } else { Scope::Global };
+            hook::install(scope, args.force)?;
+            Ok(0)
+        }
+        HookAction::Uninstall(args) => {
+            let scope = if args.project { Scope::Project } else { Scope::Global };
+            hook::uninstall(scope)?;
+            Ok(0)
+        }
+        HookAction::Show => {
+            hook::show()?;
+            Ok(0)
+        }
+        HookAction::Handle => hook::handle(),
     }
 }
 

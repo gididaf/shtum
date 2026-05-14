@@ -29,6 +29,49 @@ pub enum Command {
     /// the literal secret value does not appear in `ps aux`. Use
     /// `shtum run -- <command...>`; everything after `--` is the wrapped command.
     Run(RunArgs),
+    /// Manage the Claude Code PreToolUse hook integration.
+    Hook {
+        #[command(subcommand)]
+        action: HookAction,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum HookAction {
+    /// Install the shtum hook into Claude Code's settings.json. Defaults to
+    /// the user-global settings (~/.claude/settings.json); use --project for
+    /// the per-project file (./.claude/settings.json).
+    Install(HookInstallArgs),
+    /// Remove the shtum hook entry from Claude Code's settings.json.
+    Uninstall(HookScopeArgs),
+    /// Print the JSON snippet that `install` would add, without touching disk.
+    Show,
+    /// Internal: invoked by Claude Code for every PreToolUse Bash event. Reads
+    /// the tool-call envelope on stdin and decides whether to rewrite the
+    /// command to go through `shtum run`, deny it (when it looks like an
+    /// authenticated call missing a placeholder), or let it pass through.
+    Handle,
+}
+
+#[derive(clap::Args, Debug)]
+pub struct HookInstallArgs {
+    /// Operate on the per-project settings (./.claude/settings.json) instead
+    /// of the user-global (~/.claude/settings.json).
+    #[arg(long)]
+    pub project: bool,
+
+    /// Replace any existing shtum hook entry. By default, install refuses if
+    /// one is already present.
+    #[arg(long)]
+    pub force: bool,
+}
+
+#[derive(clap::Args, Debug)]
+pub struct HookScopeArgs {
+    /// Operate on the per-project settings (./.claude/settings.json) instead
+    /// of the user-global (~/.claude/settings.json).
+    #[arg(long)]
+    pub project: bool,
 }
 
 #[derive(clap::Args, Debug)]
