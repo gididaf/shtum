@@ -8,6 +8,7 @@ use std::sync::OnceLock;
 
 use crate::inject;
 use crate::store::{SecretStore, default_store};
+use crate::util::shtum_exe_path;
 
 #[derive(Clone, Copy, Debug)]
 pub enum Scope {
@@ -210,14 +211,6 @@ fn looks_like_shtum_run(cmd: &str) -> bool {
     // non-whitespace ending in `/`.
     let re = RE.get_or_init(|| Regex::new(r"^\s*(?:\S+/)?shtum\s+run\b").unwrap());
     re.is_match(cmd)
-}
-
-fn shtum_exe_path() -> Result<String> {
-    let exe = std::env::current_exe().context("locating current shtum binary path")?;
-    Ok(exe
-        .to_str()
-        .context("shtum binary path is not valid UTF-8")?
-        .to_string())
 }
 
 #[derive(Clone, Copy)]

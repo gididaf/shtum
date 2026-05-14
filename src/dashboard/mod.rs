@@ -2,10 +2,11 @@
 //! snippets. Binds 127.0.0.1 only; gated by a random session token. Runs
 //! until the process is interrupted (Ctrl+C exits the loop).
 //!
-//! P-D1 milestone: scaffolding + auth. Serves a single placeholder page;
-//! store integration arrives in P-D2.
+//! P-D2 milestone: read-only list view + hook-install snippets. Mutation
+//! routes and the reveal endpoint land in P-D3 / P-D4.
 
 mod auth;
+mod html;
 
 use std::io::Cursor;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpListener};
@@ -13,6 +14,8 @@ use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpListener};
 use anyhow::{Context, Result, anyhow};
 use tiny_http::{Header, Method, Response, ResponseBox, Server, StatusCode};
 
+use crate::store::{SecretStore, default_store};
+use crate::util::shtum_exe_path;
 use auth::{AuthResult, Token};
 
 const ENV_PORT: &str = "PORT";
@@ -43,8 +46,11 @@ pub fn run(opts: DashboardOpts) -> Result<i32> {
     let server = Server::from_listener(listener, None)
         .map_err(|e| anyhow!("failed to start tiny_http server: {e}"))?;
 
+    let store = default_store();
+    let shtum_path = shtum_exe_path().unwrap_or_else(|_| "shtum".to_string());
+
     for request in server.incoming_requests() {
-        if let Err(e) = handle(request, &token, bound_port) {
+        if let Err(e) = handle(request, &token, bound_port, &store, &shtum_path) {
             eprintln!("[shtum dashboard] request error: {e:#}");
         }
     }
@@ -90,9 +96,15 @@ fn bind(port: Option<u16>) -> Result<TcpListener> {
 }
 
 /// Top-level request handler. Validates Host + token, dispatches to a route.
-fn handle(request: tiny_http::Request, token: &Token, port: u16) -> Result<()> {
+fn handle(
+    request: tiny_http::Request,
+    token: &Token,
+    port: u16,
+    store: &dyn SecretStore,
+    shtum_path: &str,
+) -> Result<()> {
     let response = match auth::check_get(&request, token, port) {
-        AuthResult::Ok => dispatch(&request),
+        AuthResult::Ok => dispatch(&request, token, store, shtum_path),
         AuthResult::BadHost => error_response(421, "misdirected request"),
         AuthResult::BadToken => error_response(403, "missing or invalid token"),
     };
@@ -102,29 +114,36 @@ fn handle(request: tiny_http::Request, token: &Token, port: u16) -> Result<()> {
     Ok(())
 }
 
-fn dispatch(request: &tiny_http::Request) -> ResponseBox {
+fn dispatch(
+    request: &tiny_http::Request,
+    token: &Token,
+    store: &dyn SecretStore,
+    shtum_path: &str,
+) -> ResponseBox {
     // Strip query string for routing; we already validated the token.
     let path = request.url().split_once('?').map(|(p, _)| p).unwrap_or(request.url());
     match (request.method(), path) {
-        (Method::Get, "/") => placeholder_page(),
+        (Method::Get, "/") => index_page(token, store, shtum_path),
         _ => error_response(404, "not found"),
     }
 }
 
-/// P-D1 placeholder. Replaced by the real list view in P-D2.
-fn placeholder_page() -> ResponseBox {
-    let body = r#"<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<title>shtum dashboard</title>
-</head>
-<body>
-<h1>shtum dashboard</h1>
-<p>Scaffolding online. Secret management UI lands in the next phase.</p>
-</body>
-</html>"#;
-    html_response(200, body)
+/// Render the dashboard index: stored secret names + hook-install snippets.
+/// A failure to read from the Keychain renders an error page rather than
+/// crashing the loop — the user can still see the hook snippets and try
+/// again.
+fn index_page(token: &Token, store: &dyn SecretStore, shtum_path: &str) -> ResponseBox {
+    let secrets = match store.list() {
+        Ok(names) => names,
+        Err(e) => {
+            return error_response(
+                500,
+                &format!("failed to list secrets from Keychain: {e}"),
+            );
+        }
+    };
+    let body = html::list_page(&secrets, token.as_str(), shtum_path, None);
+    html_response(200, &body)
 }
 
 fn html_response(status: u16, body: &str) -> ResponseBox {
@@ -141,19 +160,8 @@ fn html_response(status: u16, body: &str) -> ResponseBox {
 }
 
 fn error_response(status: u16, msg: &str) -> ResponseBox {
-    let body = format!(
-        "<!doctype html><html><body><h1>{status}</h1><p>{}</p></body></html>",
-        html_escape_minimal(msg),
-    );
+    let body = html::error_page(status, msg);
     html_response(status, &body)
-}
-
-/// Minimal escape for the few error strings we render in P-D1. The full
-/// escape lives in `html.rs` and arrives in P-D2.
-fn html_escape_minimal(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
 }
 
 /// Security headers applied to every response. Locked down on purpose:
@@ -247,11 +255,5 @@ mod tests {
         let listener = bind(None).expect("0 should always bind");
         let port = listener.local_addr().unwrap().port();
         assert!(port > 0);
-    }
-
-    #[test]
-    fn html_escape_minimal_handles_basics() {
-        assert_eq!(html_escape_minimal("<script>"), "&lt;script&gt;");
-        assert_eq!(html_escape_minimal("a & b"), "a &amp; b");
     }
 }

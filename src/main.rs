@@ -6,6 +6,7 @@ mod inject;
 mod redact;
 mod store;
 mod tempfile;
+mod util;
 
 use anyhow::{Context, Result};
 use clap::Parser;
