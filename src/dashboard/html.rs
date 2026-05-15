@@ -264,6 +264,54 @@ input::placeholder { color: #4b5563; }
 .snippet .btn--copy:hover { background: #1d2532; }
 .snippet-card .hint { margin: -0.4rem 1rem 1rem; color: var(--text-muted); font-size: 0.85rem; }
 
+.docs-subhead {
+  margin: 1rem 0 0.5rem;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+.docs-subhead:first-child { margin-top: 0; }
+.ref-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  box-shadow: var(--shadow);
+}
+.ref-table thead th {
+  background: #0e131c;
+  color: var(--text-muted);
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-weight: 600;
+  text-align: left;
+  padding: 0.55rem 0.85rem;
+  border-bottom: 1px solid var(--border);
+}
+.ref-table td {
+  padding: 0.55rem 0.85rem;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+  color: var(--text);
+}
+.ref-table tr:last-child td { border-bottom: 0; }
+.ref-table td:first-child { white-space: nowrap; width: 1%; }
+.ref-table td code, .ref-note code {
+  background: var(--surface-2);
+  padding: 0.05rem 0.35rem;
+  border-radius: 3px;
+  font-size: 0.85rem;
+  color: var(--text);
+}
+.ref-note { color: var(--text-muted); font-size: 0.82rem; margin: 0.6rem 0 0; }
+
 .muted { color: var(--text-muted); }
 "#;
 
@@ -528,6 +576,62 @@ pub fn list_page(
 </div>
 </section>
 
+<section class="section">
+<header class="section__head"><h2>Placeholder reference</h2><p class="section__sub">Two orthogonal axes: the <strong>source</strong> prefix says where the value comes from, the <strong>mode</strong> prefix says how it reaches the subprocess. Bare <code>{{NAME}}</code> means default source (Keychain, env fallback) + default mode (literal argv substitution).</p></header>
+
+<h3 class="docs-subhead">Source prefixes</h3>
+<table class="ref-table">
+<thead><tr><th>Form</th><th>Where the value comes from</th></tr></thead>
+<tbody>
+<tr><td><code>{{NAME}}</code></td><td>Keychain, falling back to the environment variable <code>NAME</code>.</td></tr>
+<tr><td><code>{{kc:NAME}}</code></td><td>Keychain only. Errors if missing — never falls back to env.</td></tr>
+<tr><td><code>{{env:NAME}}</code></td><td>Environment variable only. Ignores the Keychain even if a matching entry exists.</td></tr>
+<tr><td><code>{{file:PATH}}</code></td><td>File contents at <code>PATH</code> (one trailing newline trimmed).</td></tr>
+</tbody>
+</table>
+
+<h3 class="docs-subhead">Mode prefixes</h3>
+<table class="ref-table">
+<thead><tr><th>Form</th><th>How the value reaches the subprocess</th></tr></thead>
+<tbody>
+<tr><td><code>{{argv:NAME}}</code></td><td>Explicit literal argv substitution. Prints a stderr warning that the value is visible in <code>ps</code> while the subprocess runs.</td></tr>
+<tr><td><code>{{env-inject:NAME}}</code></td><td>Directive: must be a standalone argv slot. The slot is stripped, and <code>NAME=&lt;value&gt;</code> is set in the subprocess environment.</td></tr>
+<tr><td><code>{{stdin:NAME}}</code></td><td>Directive: must be a standalone argv slot. The slot is stripped, and the value is piped to the subprocess on stdin. Max one per command.</td></tr>
+<tr><td><code>{{tempfile:NAME}}</code></td><td>Inline: replaced with the path to a <code>0600</code> temp file holding the value. Multiple refs to the same name share one file. RAII cleanup on normal exit.</td></tr>
+</tbody>
+</table>
+
+<p class="ref-note">In v1, mode prefixes always pair with the default source (Keychain + env fallback). They don't combine with <code>kc:</code> / <code>env:</code> / <code>file:</code>.</p>
+</section>
+
+<section class="section">
+<header class="section__head"><h2>Worked examples</h2><p class="section__sub">Paste-ready commands for common patterns.</p></header>
+
+<div class="card snippet-card">
+<div class="snippet-card__head"><h3>HTTP request with a Bearer token</h3><span class="muted">value pulled from Keychain at exec time, scrubbed from output</span></div>
+<div class="snippet"><pre id="snippet-example-curl">shtum run -- curl -H "Authorization: Bearer {{CF_TOKEN}}" https://api.cloudflare.com/client/v4/user</pre><button type="button" class="btn btn--ghost btn--copy" data-action="copy" data-target="snippet-example-curl">Copy</button></div>
+</div>
+
+<div class="card snippet-card">
+<div class="snippet-card__head"><h3>kubectl with a token from a file</h3><span class="muted"><code>{{file:PATH}}</code> reads file contents at exec time</span></div>
+<div class="snippet"><pre id="snippet-example-kubectl">shtum run -- kubectl --token={{file:/run/secrets/k8s-token}} get pods</pre><button type="button" class="btn btn--ghost btn--copy" data-action="copy" data-target="snippet-example-kubectl">Copy</button></div>
+</div>
+</section>
+
+<section class="section">
+<header class="section__head"><h2>Runtime flags</h2><p class="section__sub">Flags for <code>shtum run</code>. Defaults are safe; toggle when you need different behaviour.</p></header>
+
+<table class="ref-table">
+<thead><tr><th>Flag</th><th>Effect</th></tr></thead>
+<tbody>
+<tr><td><code>--dry-run</code></td><td>Resolve all placeholders and print the rewritten invocation with values masked as <code>[REDACTED:&lt;placeholder&gt;]</code>. Nothing is executed. Doubles as a "are my secrets reachable?" check.</td></tr>
+<tr><td><code>--no-auto-redact</code></td><td>Disable the automatic scrubber that replaces literal / URL-encoded / base64 occurrences of injected secret values in stdout / stderr. Debugging only.</td></tr>
+<tr><td><code>--redact &lt;REGEX&gt;</code></td><td>Additional regex pattern to redact from subprocess output. Repeatable. Merged with the built-in default set (unless <code>--no-default-redact</code> is also passed).</td></tr>
+<tr><td><code>--no-default-redact</code></td><td>Disable the built-in default regex set (JWTs, AWS access keys, Bearer tokens, GitHub PATs). Any <code>--redact</code> patterns are still applied.</td></tr>
+</tbody>
+</table>
+</section>
+
 </section>
 </main>
 
@@ -786,6 +890,44 @@ mod tests {
         let html = list_page(&[], "tok", "/abs/path/to/shtum", None);
         assert!(html.contains("/abs/path/to/shtum hook install"));
         assert!(html.contains("cd /path/to/your-project &amp;&amp; /abs/path/to/shtum hook install --project"));
+    }
+
+    #[test]
+    fn list_page_renders_placeholder_grammar_examples_and_flags() {
+        // P8b content blocks live inside the Docs panel. The render must
+        // contain representative strings from each so future refactors of
+        // index_page can't silently drop content.
+        let html = list_page(&[], "tok", "/usr/local/bin/shtum", None);
+
+        // Placeholder reference: at least one source prefix and one mode
+        // prefix from each table.
+        assert!(html.contains("{kc:NAME}"), "missing {{kc:NAME}} in source-prefix table");
+        assert!(html.contains("{env:NAME}"), "missing {{env:NAME}} in source-prefix table");
+        assert!(html.contains("{file:PATH}"), "missing {{file:PATH}} in source-prefix table");
+        assert!(html.contains("{env-inject:NAME}"), "missing {{env-inject:NAME}} in mode table");
+        assert!(html.contains("{stdin:NAME}"), "missing {{stdin:NAME}} in mode table");
+        assert!(html.contains("{tempfile:NAME}"), "missing {{tempfile:NAME}} in mode table");
+
+        // Worked examples: both snippet IDs (so the copy buttons can find them).
+        assert!(html.contains(r#"id="snippet-example-curl""#));
+        assert!(html.contains(r#"id="snippet-example-kubectl""#));
+        // And the literal commands users will copy.
+        assert!(html.contains("Authorization: Bearer {CF_TOKEN}"));
+        assert!(html.contains("kubectl --token={file:/run/secrets/k8s-token}"));
+
+        // Flags reference: all four flags.
+        assert!(html.contains("--dry-run"));
+        assert!(html.contains("--no-auto-redact"));
+        assert!(html.contains("--redact &lt;REGEX&gt;"));
+        assert!(html.contains("--no-default-redact"));
+
+        // All P8b content lives inside the Docs panel, after the
+        // hook-install snippets and before the panel closes.
+        let docs_open = html.find(r#"id="panel-docs""#).expect("docs panel present");
+        let placeholder_idx = html.find("Placeholder reference").expect("placeholder section present");
+        let flags_idx = html.find("Runtime flags").expect("flags section present");
+        assert!(placeholder_idx > docs_open);
+        assert!(flags_idx > placeholder_idx);
     }
 
     #[test]
