@@ -86,6 +86,38 @@ a { color: var(--accent); }
 .brand { font-size: 1.05rem; font-weight: 600; letter-spacing: 0.02em; color: var(--text); }
 .brand__sub { color: var(--text-muted); font-size: 0.85rem; }
 
+.tabnav {
+  background: var(--surface-3);
+  border-bottom: 1px solid var(--border);
+}
+.tabnav__inner {
+  max-width: 980px;
+  margin: 0 auto;
+  padding: 0 1.25rem;
+  display: flex;
+  gap: 0.25rem;
+}
+.tab {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 0.88rem;
+  font-weight: 500;
+  padding: 0.85rem 1rem;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  transition: color 120ms ease, border-color 120ms ease;
+}
+.tab:hover { color: var(--text); }
+.tab[aria-selected="true"] {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+}
+.tab:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
 .page { max-width: 980px; margin: 0 auto; padding: 1.5rem 1.25rem 4rem; }
 
 .section { margin-top: 2rem; }
@@ -221,7 +253,15 @@ input::placeholder { color: #4b5563; }
 .snippet-card__head .muted { color: var(--text-muted); font-size: 0.85rem; }
 .snippet { position: relative; padding: 0 1rem 1rem; }
 .snippet pre { background: #060a10; border: 1px solid var(--border); padding: 0.7rem 0.9rem; padding-right: 4.5rem; border-radius: var(--radius-sm); margin: 0; overflow-x: auto; font-size: 0.82rem; color: #d3d9e1; line-height: 1.5; }
-.snippet .btn--copy { position: absolute; top: 0.45rem; right: 1.4rem; }
+.snippet .btn--copy {
+  position: absolute;
+  top: 0.45rem;
+  right: 1.4rem;
+  background: var(--surface-2);
+  border-color: var(--border-strong);
+  z-index: 1;
+}
+.snippet .btn--copy:hover { background: #1d2532; }
 .snippet-card .hint { margin: -0.4rem 1rem 1rem; color: var(--text-muted); font-size: 0.85rem; }
 
 .muted { color: var(--text-muted); }
@@ -322,6 +362,51 @@ const SCRIPT: &str = r#"
     }
   }
 })();
+
+(function() {
+  var tabs = Array.prototype.slice.call(document.querySelectorAll('[role="tab"]'));
+  if (!tabs.length) return;
+  function activate(target, focus) {
+    tabs.forEach(function(t) {
+      var selected = t === target;
+      t.setAttribute('aria-selected', selected ? 'true' : 'false');
+      t.tabIndex = selected ? 0 : -1;
+      var panel = document.getElementById(t.getAttribute('aria-controls'));
+      if (panel) panel.hidden = !selected;
+    });
+    if (focus) target.focus();
+  }
+  var hash = location.hash.replace(/^#/, '');
+  var initial = null;
+  for (var i = 0; i < tabs.length; i++) {
+    if (tabs[i].dataset.tabKey === hash) { initial = tabs[i]; break; }
+  }
+  activate(initial || tabs[0], false);
+  tabs.forEach(function(t) {
+    t.addEventListener('click', function() {
+      activate(t, false);
+      var key = t.dataset.tabKey;
+      var newHash = key === tabs[0].dataset.tabKey ? '' : '#' + key;
+      history.replaceState(null, '', location.pathname + location.search + newHash);
+    });
+    t.addEventListener('keydown', function(e) {
+      var idx = tabs.indexOf(t);
+      if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+        e.preventDefault();
+        activate(tabs[(idx + 1) % tabs.length], true);
+      } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+        e.preventDefault();
+        activate(tabs[(idx - 1 + tabs.length) % tabs.length], true);
+      } else if (e.key === 'Home') {
+        e.preventDefault();
+        activate(tabs[0], true);
+      } else if (e.key === 'End') {
+        e.preventDefault();
+        activate(tabs[tabs.length - 1], true);
+      }
+    });
+  });
+})();
 "#;
 
 /// Render the dashboard index. The session token is embedded in every
@@ -405,8 +490,14 @@ pub fn list_page(
 </head>
 <body data-token="{token}" data-secret-names="{names_json_attr}">
 <header class="topbar"><div class="topbar__inner"><span class="brand">shtum</span><span class="brand__sub">local secrets dashboard</span></div></header>
+<nav class="tabnav"><div class="tabnav__inner" role="tablist" aria-label="Sections">
+<button type="button" class="tab" role="tab" id="tab-keys" data-tab-key="keys" aria-controls="panel-keys" aria-selected="true" tabindex="0">Keys</button>
+<button type="button" class="tab" role="tab" id="tab-docs" data-tab-key="docs" aria-controls="panel-docs" aria-selected="false" tabindex="-1">Docs</button>
+</div></nav>
 <main class="page">
 {flash_html}
+
+<section id="panel-keys" role="tabpanel" aria-labelledby="tab-keys">
 
 <section class="section">
 <header class="section__head"><h2>Add a secret</h2><p class="section__sub">Names live in the macOS Keychain. Values are never logged.</p></header>
@@ -417,6 +508,10 @@ pub fn list_page(
 <header class="section__head"><h2>Stored secrets</h2></header>
 {secrets_list}
 </section>
+
+</section>
+
+<section id="panel-docs" role="tabpanel" aria-labelledby="tab-docs" hidden>
 
 <section class="section">
 <header class="section__head"><h2>Install the Claude Code hook</h2><p class="section__sub">These commands install the PreToolUse hook that rewrites Bash tool calls containing <code>{{NAME}}</code> placeholders through <code>shtum run</code>. Pick one:</p></header>
@@ -431,6 +526,8 @@ pub fn list_page(
 <div class="snippet"><pre id="snippet-project">{project_cmd}</pre><button type="button" class="btn btn--ghost btn--copy" data-action="copy" data-target="snippet-project">Copy</button></div>
 <p class="hint">Replace <code>/path/to/your-project</code> with the project directory you want to enable.</p>
 </div>
+</section>
+
 </section>
 </main>
 
@@ -689,6 +786,24 @@ mod tests {
         let html = list_page(&[], "tok", "/abs/path/to/shtum", None);
         assert!(html.contains("/abs/path/to/shtum hook install"));
         assert!(html.contains("cd /path/to/your-project &amp;&amp; /abs/path/to/shtum hook install --project"));
+    }
+
+    #[test]
+    fn list_page_renders_tab_nav_with_keys_and_docs_panels() {
+        let html = list_page(&[], "tok", "/usr/local/bin/shtum", None);
+        // Tablist with both tabs.
+        assert!(html.contains(r#"role="tablist""#));
+        assert!(html.contains(r#"id="tab-keys""#));
+        assert!(html.contains(r#"id="tab-docs""#));
+        // Both panels present; Docs panel starts hidden.
+        assert!(html.contains(r#"id="panel-keys" role="tabpanel""#));
+        assert!(html.contains(r#"id="panel-docs" role="tabpanel" aria-labelledby="tab-docs" hidden"#));
+        // Hook snippets live inside the Docs panel, not the Keys panel.
+        let docs_start = html.find(r#"id="panel-docs""#).expect("docs panel present");
+        let keys_start = html.find(r#"id="panel-keys""#).expect("keys panel present");
+        let snippets_idx = html.find("snippet-global").expect("snippets present");
+        assert!(snippets_idx > docs_start, "snippets must appear after docs panel opens");
+        assert!(keys_start < docs_start, "keys panel must appear before docs panel");
     }
 
     #[test]
