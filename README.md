@@ -68,11 +68,13 @@ shtum run -- curl -H "Authorization: Bearer {CF_API_TOKEN}" \
 
 `shtum` resolves `{CF_API_TOKEN}` from the Keychain, execs `curl` with the real token, and filters the response: any occurrence of the token's literal, URL-encoded, or base64-of-literal form is replaced with `[REDACTED]` before you see the output. Even if the API echoes the token back, you never see the value.
 
-**3. List, rotate, remove:**
+**3. List, rotate, rename, remove:**
 
 ```bash
 shtum store list
 shtum store rotate CF_API_TOKEN
+shtum store rename CF_API_TOKEN CF_TOKEN          # refuses if CF_TOKEN already exists
+shtum store rename CF_API_TOKEN CF_TOKEN --force  # overwrite an existing target
 shtum store rm CF_API_TOKEN
 ```
 

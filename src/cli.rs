@@ -136,11 +136,50 @@ pub enum StoreAction {
         name: String,
     },
     /// Replace a stored secret's value (prompts for the new value).
-    Rotate(AddArgs),
+    /// Idempotent: succeeds whether or not the secret already exists.
+    Rotate(RotateArgs),
+    /// Rename a stored secret. Refuses by default if `<NEW>` already exists;
+    /// pass `--force` to overwrite the destination. The value is preserved
+    /// unchanged.
+    Rename(RenameArgs),
+}
+
+#[derive(clap::Args, Debug)]
+pub struct RenameArgs {
+    /// Current name.
+    pub old: String,
+    /// New name. Allowed characters: [A-Za-z0-9_.-].
+    pub new: String,
+    /// Overwrite the destination if it already exists. Without this, rename
+    /// refuses when `<NEW>` is already a stored name.
+    #[arg(long)]
+    pub force: bool,
 }
 
 #[derive(clap::Args, Debug)]
 pub struct AddArgs {
+    /// Name of the secret. Allowed characters: [A-Za-z0-9_.-].
+    pub name: String,
+
+    /// Read the value from this file instead of prompting. A single trailing
+    /// newline is stripped (so `echo secret > file` works as expected).
+    #[arg(long, value_name = "PATH", conflicts_with = "from_stdin")]
+    pub from_file: Option<PathBuf>,
+
+    /// Read the value from stdin instead of prompting. A single trailing
+    /// newline is stripped.
+    #[arg(long, conflicts_with = "from_file")]
+    pub from_stdin: bool,
+
+    /// Replace the existing value if `<NAME>` is already stored. Without
+    /// this, `add` refuses on collision; use `shtum store rotate` for an
+    /// idempotent replace.
+    #[arg(long)]
+    pub force: bool,
+}
+
+#[derive(clap::Args, Debug)]
+pub struct RotateArgs {
     /// Name of the secret. Allowed characters: [A-Za-z0-9_.-].
     pub name: String,
 

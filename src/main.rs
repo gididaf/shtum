@@ -13,7 +13,9 @@ use clap::Parser;
 use std::io::{IsTerminal, Read};
 use std::path::Path;
 
-use crate::cli::{AddArgs, Cli, Command, DashboardArgs, HookAction, RunArgs, StoreAction};
+use crate::cli::{
+    AddArgs, Cli, Command, DashboardArgs, HookAction, RenameArgs, RotateArgs, RunArgs, StoreAction,
+};
 use crate::hook::Scope;
 use crate::store::{SecretStore, StoreError, default_store, validate_name};
 
@@ -122,8 +124,8 @@ fn print_dry_run(original_argv: &[String], plan: &inject::Plan) {
 fn run_store(action: StoreAction) -> Result<()> {
     let store = default_store();
     match action {
-        StoreAction::Add(args) => add_secret(&store, args, false),
-        StoreAction::Rotate(args) => add_secret(&store, args, true),
+        StoreAction::Add(args) => add_secret(&store, args),
+        StoreAction::Rotate(args) => rotate_secret(&store, args),
         StoreAction::List => list_secrets(&store),
         StoreAction::Rm { name } => {
             validate_name(&name)?;
@@ -131,7 +133,22 @@ fn run_store(action: StoreAction) -> Result<()> {
             eprintln!("removed `{name}`");
             Ok(())
         }
+        StoreAction::Rename(args) => rename_secret(&store, args),
     }
+}
+
+fn rename_secret(store: &impl SecretStore, args: RenameArgs) -> Result<()> {
+    validate_name(&args.old)?;
+    validate_name(&args.new)?;
+    if args.old == args.new {
+        eprintln!("`{}` unchanged (old and new names are identical)", args.old);
+        return Ok(());
+    }
+    store
+        .rename(&args.old, &args.new, args.force)
+        .context("failed to rename secret")?;
+    eprintln!("renamed `{}` -> `{}`", args.old, args.new);
+    Ok(())
 }
 
 fn list_secrets(store: &impl SecretStore) -> Result<()> {
@@ -142,39 +159,51 @@ fn list_secrets(store: &impl SecretStore) -> Result<()> {
     Ok(())
 }
 
-fn add_secret(store: &impl SecretStore, args: AddArgs, rotating: bool) -> Result<()> {
+fn add_secret(store: &impl SecretStore, args: AddArgs) -> Result<()> {
     validate_name(&args.name)?;
-    let value = read_value(&args)?;
+    let value = read_value(&args.name, args.from_file.as_deref(), args.from_stdin)?;
     if value.is_empty() {
         anyhow::bail!("refusing to store an empty value");
     }
-    if rotating {
-        match store.delete(&args.name) {
-            Ok(()) | Err(StoreError::NotFound(_)) => {}
-            Err(e) => return Err(e.into()),
+    match store.add(&args.name, &value, args.force) {
+        Ok(()) => {
+            eprintln!("stored `{}`", args.name);
+            Ok(())
         }
+        Err(StoreError::AlreadyExists(n)) => anyhow::bail!(
+            "`{n}` already exists. Use `shtum store rotate {n}` to replace its value, or pass `--force` to overwrite.",
+        ),
+        Err(e) => Err(e).context("failed to store secret"),
+    }
+}
+
+fn rotate_secret(store: &impl SecretStore, args: RotateArgs) -> Result<()> {
+    validate_name(&args.name)?;
+    let value = read_value(&args.name, args.from_file.as_deref(), args.from_stdin)?;
+    if value.is_empty() {
+        anyhow::bail!("refusing to store an empty value");
+    }
+    match store.delete(&args.name) {
+        Ok(()) | Err(StoreError::NotFound(_)) => {}
+        Err(e) => return Err(e.into()),
     }
     store
         .set(&args.name, &value)
         .context("failed to store secret")?;
-    eprintln!(
-        "{} `{}`",
-        if rotating { "rotated" } else { "stored" },
-        args.name
-    );
+    eprintln!("rotated `{}`", args.name);
     Ok(())
 }
 
-fn read_value(args: &AddArgs) -> Result<Vec<u8>> {
-    if let Some(path) = &args.from_file {
+fn read_value(name: &str, from_file: Option<&Path>, from_stdin: bool) -> Result<Vec<u8>> {
+    if let Some(path) = from_file {
         return read_from_file(path);
     }
-    if args.from_stdin {
+    if from_stdin {
         return read_from_stdin();
     }
     let stdin = std::io::stdin();
     if stdin.is_terminal() {
-        let prompt = format!("Enter value for `{}`: ", args.name);
+        let prompt = format!("Enter value for `{name}`: ");
         let value = rpassword::prompt_password(prompt).context("failed to read password")?;
         Ok(value.into_bytes())
     } else {

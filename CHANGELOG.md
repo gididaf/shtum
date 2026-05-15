@@ -4,6 +4,19 @@ All notable changes to `shtum` are recorded here. Format loosely follows [Keep a
 
 ## [Unreleased]
 
+### Added
+
+- **`shtum store rename <OLD> <NEW>`** — rename a stored secret in place; the value is preserved unchanged. Refuses by default if `<NEW>` is already a stored name; pass `--force` to overwrite the destination. Same-name renames are no-ops.
+- **Dashboard rename action** — Rename lives inside the new per-row Edit panel (just a new-name field + button). Collisions are handled with a `confirm()` prompt: the page-level JS checks the typed name against the names embedded on `<body data-secret-names>`, and if it collides, asks the user before adding a hidden `force=on` field and submitting. Posts to `POST /secrets/<old>/rename` with the same token-in-body CSRF protection as the existing Add/Rotate/Delete forms.
+- **`shtum store add --force`** — opt-in overwrite of an existing secret on `add`. The same `data-confirm-overwrite` JS hook covers the dashboard's Add form too: if the typed name is already stored, the page prompts before submitting.
+- `SecretStore::add` (default trait impl: existence check → set; refuses on collision unless `force` is set), `SecretStore::rename` (existence check → get → set → delete; backends with native versions can override), and `StoreError::AlreadyExists`.
+
+### Changed
+
+- **`shtum store add` no longer silently overwrites.** Previously `add` and `rotate` were synonyms — both called `set()` directly, which on Keychain is upsert. `add` now refuses on collision with a clear error pointing at `rotate` (idempotent replace) or `--force` (opt-in clobber). `rotate` is unchanged: idempotent, succeeds whether the secret existed before or not.
+- CLI: `Rotate(AddArgs)` split into `Rotate(RotateArgs)` so `--force` only appears on `add --help`, not `rotate --help`.
+- **Dashboard UI redesign** — dark theme with a real button hierarchy (filled-primary / ghost-secondary / outline-danger), card-based sections, and a collapsible **Edit** panel per secret. The default secret-list row is now just `name + Reveal + Edit`; Rename / Rotate / Delete forms live inside the Edit panel (Rename first — identity before content). No new JS deps — same inline `<script>` block, with extra handlers for the toggle and the generic confirm-on-collision flow. CSP unchanged.
+
 ## [0.2.0] — 2026-05-14
 
 ### Added

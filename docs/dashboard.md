@@ -33,11 +33,15 @@ The `token=` query value is replaced with `[REDACTED]` before logging. Request a
 
 ## What you can do
 
+Each row in the secrets list shows the name + a **Reveal** button + an **Edit** toggle. The destructive and write actions live inside the Edit panel, kept out of the way until you actually need them.
+
 - **List** the names of stored secrets.
-- **Add** a new secret with the form at the top of the page (Keychain names must match `[A-Za-z0-9_.-]+`).
-- **Rotate** a secret in place by entering a new value and clicking Rotate. Equivalent to `shtum store rotate`.
-- **Delete** a secret. A browser confirm dialog fires before the request leaves the page.
-- **Reveal** a secret's value inline. The value renders in a yellow box for up to 30 seconds, then auto-hides; click Hide to clear it sooner.
+- **Add** a new secret with the form at the top of the page (Keychain names must match `[A-Za-z0-9_.-]+`). If you type a name that already exists, the dashboard prompts for confirmation before overwriting; declining cancels the add.
+- **Reveal** a secret's value inline. The value renders in a green box for up to 30 seconds, then auto-hides; click Hide to clear it sooner.
+- **Edit** opens an inline panel with three sections:
+  - **Rotate value** — replace the stored value. Equivalent to `shtum store rotate`.
+  - **Rename** — change the secret's name. Equivalent to `shtum store rename`. If the new name you typed is already in use, the dashboard prompts for confirmation before overwriting; declining cancels the request, accepting destroys the existing entry under that name.
+  - **Danger zone → Delete** — remove the secret. A browser confirm dialog fires before the request leaves the page.
 - **Copy** the global or per-project hook-install command to your clipboard. The dashboard never installs the hook itself — copy the command, paste it into a terminal, run it yourself.
 
 ## Threat model — what the dashboard protects against

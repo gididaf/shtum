@@ -266,6 +266,7 @@ fn dispatch_post(
     match route {
         OwnedRoute::Add => handle_add(store, &form, token),
         OwnedRoute::Rotate(name) => handle_rotate(store, &name, &form, token),
+        OwnedRoute::Rename(name) => handle_rename(store, &name, &form, token),
         OwnedRoute::Delete(name) => handle_delete(store, &name, token),
         OwnedRoute::NotFound => unreachable!("guarded above"),
     }
@@ -274,6 +275,7 @@ fn dispatch_post(
 enum PostRoute<'a> {
     Add,
     Rotate(&'a str),
+    Rename(&'a str),
     Delete(&'a str),
     NotFound,
 }
@@ -281,6 +283,7 @@ enum PostRoute<'a> {
 enum OwnedRoute {
     Add,
     Rotate(String),
+    Rename(String),
     Delete(String),
     NotFound,
 }
@@ -290,6 +293,7 @@ impl PostRoute<'_> {
         match self {
             PostRoute::Add => OwnedRoute::Add,
             PostRoute::Rotate(s) => OwnedRoute::Rotate(s.to_string()),
+            PostRoute::Rename(s) => OwnedRoute::Rename(s.to_string()),
             PostRoute::Delete(s) => OwnedRoute::Delete(s.to_string()),
             PostRoute::NotFound => OwnedRoute::NotFound,
         }
@@ -304,6 +308,11 @@ fn match_post_route(path: &str) -> PostRoute<'_> {
         if let Some(name) = rest.strip_suffix("/rotate") {
             if !name.is_empty() && !name.contains('/') {
                 return PostRoute::Rotate(name);
+            }
+        }
+        if let Some(name) = rest.strip_suffix("/rename") {
+            if !name.is_empty() && !name.contains('/') {
+                return PostRoute::Rename(name);
             }
         }
         if let Some(name) = rest.strip_suffix("/delete") {
@@ -371,8 +380,17 @@ fn handle_add(
     if let Err(e) = validate_name(name) {
         return redirect_with_flash(token, FlashKind::Error, &format!("{e}"));
     }
-    match store.set(name, value) {
+    let force = form
+        .get("force")
+        .map(|v| matches!(v.as_str(), "on" | "1" | "true"))
+        .unwrap_or(false);
+    match store.add(name, value, force) {
         Ok(()) => redirect_with_flash(token, FlashKind::Info, &format!("stored `{name}`")),
+        Err(StoreError::AlreadyExists(n)) => redirect_with_flash(
+            token,
+            FlashKind::Error,
+            &format!("`{n}` already exists. Refresh the page and try again — the dashboard will prompt for confirmation before overwriting."),
+        ),
         Err(e) => redirect_with_flash(token, FlashKind::Error, &format!("failed to store: {e}")),
     }
 }
@@ -435,6 +453,66 @@ fn handle_reveal(store: &dyn SecretStore, name: &str) -> Resp {
         Ok(value) => text_response(200, value),
         Err(StoreError::NotFound(_)) => error_response(404, "secret not found"),
         Err(e) => error_response(500, &format!("Keychain read failed: {e}")),
+    }
+}
+
+/// Rename a secret. Mirrors the CLI: refuses by default if the target
+/// already exists; the form's `force` checkbox lets the user opt in to
+/// overwriting. The `name` hidden field must agree with the URL slug, so
+/// a stale tab can't rename a different secret than the one shown.
+fn handle_rename(
+    store: &dyn SecretStore,
+    name_in_path: &str,
+    form: &HashMap<String, String>,
+    token: &Token,
+) -> Resp {
+    if let Some(form_name) = form.get("name") {
+        if form_name != name_in_path {
+            return redirect_with_flash(
+                token,
+                FlashKind::Error,
+                "form name does not match URL — refresh and try again",
+            );
+        }
+    }
+    if let Err(e) = validate_name(name_in_path) {
+        return redirect_with_flash(token, FlashKind::Error, &format!("{e}"));
+    }
+    let new_name = match form.get("new_name") {
+        Some(v) if !v.is_empty() => v.as_str(),
+        _ => return redirect_with_flash(token, FlashKind::Error, "new name is required"),
+    };
+    if let Err(e) = validate_name(new_name) {
+        return redirect_with_flash(token, FlashKind::Error, &format!("{e}"));
+    }
+    let force = form
+        .get("force")
+        .map(|v| matches!(v.as_str(), "on" | "1" | "true"))
+        .unwrap_or(false);
+    if name_in_path == new_name {
+        return redirect_with_flash(
+            token,
+            FlashKind::Info,
+            &format!("`{name_in_path}` unchanged (old and new names are identical)"),
+        );
+    }
+    match store.rename(name_in_path, new_name, force) {
+        Ok(()) => redirect_with_flash(
+            token,
+            FlashKind::Info,
+            &format!("renamed `{name_in_path}` -> `{new_name}`"),
+        ),
+        Err(StoreError::AlreadyExists(n)) => redirect_with_flash(
+            token,
+            FlashKind::Error,
+            &format!("`{n}` already exists. Refresh the page and try again — the dashboard will prompt for confirmation before overwriting."),
+        ),
+        Err(StoreError::NotFound(n)) => redirect_with_flash(
+            token,
+            FlashKind::Error,
+            &format!("`{n}` no longer exists"),
+        ),
+        Err(e) => redirect_with_flash(token, FlashKind::Error, &format!("failed to rename: {e}")),
     }
 }
 
@@ -686,10 +764,22 @@ mod tests {
     }
 
     #[test]
+    fn match_post_route_rename_extracts_name() {
+        match match_post_route("/secrets/MY_KEY/rename") {
+            PostRoute::Rename("MY_KEY") => {}
+            other => panic!("unexpected: {}", debug_route(&other)),
+        }
+    }
+
+    #[test]
     fn match_post_route_rejects_nested_slash() {
         // Path-traversal attempt or accidental nested segment.
         assert!(matches!(
             match_post_route("/secrets/foo/bar/delete"),
+            PostRoute::NotFound,
+        ));
+        assert!(matches!(
+            match_post_route("/secrets/foo/bar/rename"),
             PostRoute::NotFound,
         ));
     }
@@ -702,6 +792,10 @@ mod tests {
         ));
         assert!(matches!(
             match_post_route("/secrets//delete"),
+            PostRoute::NotFound,
+        ));
+        assert!(matches!(
+            match_post_route("/secrets//rename"),
             PostRoute::NotFound,
         ));
     }
@@ -740,6 +834,7 @@ mod tests {
         match r {
             PostRoute::Add => "Add".into(),
             PostRoute::Rotate(n) => format!("Rotate({n})"),
+            PostRoute::Rename(n) => format!("Rename({n})"),
             PostRoute::Delete(n) => format!("Delete({n})"),
             PostRoute::NotFound => "NotFound".into(),
         }
