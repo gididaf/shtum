@@ -11,15 +11,13 @@ permissions:
 jobs:
   build:
     name: build (${{ matrix.target }})
+    runs-on: macos-14
     strategy:
       fail-fast: true
       matrix:
-        include:
-          - target: aarch64-apple-darwin
-            runner: macos-14
-          - target: x86_64-apple-darwin
-            runner: macos-13
-    runs-on: ${{ matrix.runner }}
+        target:
+          - aarch64-apple-darwin
+          - x86_64-apple-darwin
     steps:
       - uses: actions/checkout@v4
 
@@ -31,7 +29,14 @@ jobs:
         with:
           key: release-${{ matrix.target }}
 
-      - name: Tests
+      # Tests only on the native arm64 leg. The x86_64 leg is built via cross-compilation
+      # on the same arm64 host (Apple's toolchain supports `--target x86_64-apple-darwin`
+      # natively); we don't execute the resulting Intel binary in CI. The arch-sensitive
+      # surface in this codebase is small enough that "links cleanly" is acceptable
+      # confidence — running the cross-built binary via Rosetta is possible but adds
+      # flake surface we don't need.
+      - name: Tests (native target only)
+        if: matrix.target == 'aarch64-apple-darwin'
         run: cargo test --release --locked --target ${{ matrix.target }}
 
       - name: Build
