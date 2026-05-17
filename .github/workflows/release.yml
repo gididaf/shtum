@@ -95,6 +95,20 @@ jobs:
 
             ## Install
 
+            **Homebrew (recommended):**
+
+            ```bash
+            brew install gididaf/shtum/shtum
+            ```
+
+            **Curl-pipe installer:**
+
+            ```bash
+            curl -fsSL https://raw.githubusercontent.com/gididaf/shtum/main/install.sh | sh
+            ```
+
+            **Manual tarball:**
+
             ```bash
             VERSION="${{ github.ref_name }}"
             ARCH=$(uname -m); [ "$ARCH" = "arm64" ] && TARGET=aarch64-apple-darwin || TARGET=x86_64-apple-darwin
@@ -103,11 +117,89 @@ jobs:
             shasum -a 256 -c SHA256SUMS --ignore-missing
             tar xzf "shtum-${VERSION}-${TARGET}.tar.gz"
             sudo mv "shtum-${VERSION}-${TARGET}/shtum" /usr/local/bin/
-            ```
-
-            **First-run Gatekeeper warning is expected** — the binary is not yet notarized in v0.x.
-            Allow once via System Settings → Privacy & Security → "Allow Anyway", or strip the quarantine flag manually:
-
-            ```bash
             xattr -dr com.apple.quarantine /usr/local/bin/shtum
             ```
+
+  bump-tap:
+    name: bump Homebrew tap formula
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout tap repo
+        uses: actions/checkout@v4
+        with:
+          repository: gididaf/homebrew-shtum
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: tap
+
+      - name: Fetch SHA256SUMS from this release
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          curl -fsSL \
+            "https://github.com/gididaf/shtum/releases/download/${VERSION}/SHA256SUMS" \
+            -o SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Update Formula/shtum.rb
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          ARM_SHA=$(awk '/-aarch64-apple-darwin\.tar\.gz$/ {print $1}' SHA256SUMS)
+          X86_SHA=$(awk '/-x86_64-apple-darwin\.tar\.gz$/  {print $1}' SHA256SUMS)
+          [ -n "$ARM_SHA" ] || { echo "no arm64 SHA in SHA256SUMS" >&2; exit 1; }
+          [ -n "$X86_SHA" ] || { echo "no x86_64 SHA in SHA256SUMS" >&2; exit 1; }
+          export ARM_SHA X86_SHA VERSION
+          python3 <<'PY'
+          import os, re, pathlib
+          version = os.environ['VERSION']
+          bare    = version.lstrip('v')
+          arm_sha = os.environ['ARM_SHA']
+          x86_sha = os.environ['X86_SHA']
+          p = pathlib.Path('tap/Formula/shtum.rb')
+          s = p.read_text()
+          # version "X.Y.Z"
+          s = re.sub(r'version "[^"]+"', f'version "{bare}"', s)
+          # URL for each arch (preserves the if-else conditional structure)
+          s = re.sub(
+              r'(https://github\.com/gididaf/shtum/releases/download/)v[^/]+(/shtum-)v[^-]+(-aarch64-apple-darwin\.tar\.gz)',
+              rf'\1{version}\2{version}\3', s,
+          )
+          s = re.sub(
+              r'(https://github\.com/gididaf/shtum/releases/download/)v[^/]+(/shtum-)v[^-]+(-x86_64-apple-darwin\.tar\.gz)',
+              rf'\1{version}\2{version}\3', s,
+          )
+          # SHA256 lines — target the one immediately following each arch's url line
+          def replace_sha(s, arch, new_sha):
+              pat = re.compile(
+                  rf'(url "[^"]*-{arch}-apple-darwin\.tar\.gz"\s*\n\s*sha256 ")[0-9a-f]{{64}}(")',
+                  re.MULTILINE,
+              )
+              new, n = pat.subn(rf'\g<1>{new_sha}\g<2>', s)
+              if n != 1:
+                  raise SystemExit(f'expected exactly 1 sha256 substitution for {arch}, got {n}')
+              return new
+          s = replace_sha(s, 'aarch64', arm_sha)
+          s = replace_sha(s, 'x86_64', x86_sha)
+          p.write_text(s)
+          PY
+          echo "--- updated Formula/shtum.rb ---"
+          cat tap/Formula/shtum.rb
+
+      - name: Commit + push to tap
+        env:
+          VERSION: ${{ github.ref_name }}
+        working-directory: tap
+        run: |
+          set -euo pipefail
+          if git diff --quiet Formula/shtum.rb; then
+            echo "Formula already at ${VERSION}; nothing to commit"
+            exit 0
+          fi
+          git config user.name  "shtum release bot"
+          git config user.email "noreply@anthropic.com"
+          git add Formula/shtum.rb
+          git commit -m "Bump shtum to ${VERSION}"
+          git push
