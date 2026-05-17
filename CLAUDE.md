@@ -41,7 +41,7 @@ If a request appears to contradict any of these, surface it before proceeding.
 
 - **License:** Apache-2.0.
 - **Platform:** macOS only. `SecretStore` trait is the abstraction point for Linux later.
-- **Namespace claims** (GitHub org, crates.io, homebrew tap): **deferred** until the tool is proven working. Do not push to remote, publish, or claim names without explicit user instruction.
+- **Namespace claims:** GitHub `gididaf/shtum` is **public** and Homebrew tap `gididaf/homebrew-shtum` is **public** (both claimed 2026-05-17, v0.3.0 release shipped). Pushes to either repo are routine for normal release work — no force-pushes to `main`, no destructive operations, no other-namespace claims without explicit user instruction. **crates.io is still deferred** (`publish = false` in `Cargo.toml`); flip when ready.
 - **Placeholder grammar:** two orthogonal axes:
   - **Source** prefix (where the value comes from): bare `{NAME}` (default = Keychain + env fallback), `{kc:NAME}`, `{env:NAME}`, `{file:PATH}`.
   - **Mode** prefix (how the value reaches the subprocess; always paired with default source in v1): `{argv:NAME}` (explicit literal argv + ps-warning), `{env-inject:NAME}` (directive — must be standalone argv slot; sets env, strips slot), `{stdin:NAME}` (directive — standalone; piped to subprocess stdin; max one per command), `{tempfile:NAME}` (inline — replaced with path to 0600 temp file; multiple refs share one file; RAII cleanup).
