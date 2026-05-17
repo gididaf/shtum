@@ -244,19 +244,12 @@ fn run_quick(args: QuickArgs) -> Result<()> {
     Ok(())
 }
 
-/// Best-effort lazy sweep of expired temp keys. Called at the start of
-/// every operation that surfaces or resolves keys (`shtum run`, `shtum
-/// store list`, dashboard request handlers). Never fails the calling
-/// operation: registry open failure is silent; per-entry backend errors
-/// are logged to stderr and the entry is kept for next sweep.
+/// Thin alias retained so existing call sites keep reading naturally.
+/// The real implementation lives in `temp::sweep_default` because the
+/// dashboard module needs the same behaviour and depending on
+/// `main`-only helpers from `dashboard::` would be wrong-way coupling.
 fn sweep_temp_keys<S: SecretStore + ?Sized>(store: &S) {
-    let Ok(registry) = temp::TempRegistry::open_default() else {
-        return;
-    };
-    let report = registry.sweep(store);
-    for (name, err) in &report.errored {
-        eprintln!("shtum: failed to remove expired temp key `{name}`: {err}");
-    }
+    temp::sweep_default(store);
 }
 
 fn add_secret(store: &impl SecretStore, args: AddArgs) -> Result<()> {

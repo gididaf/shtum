@@ -18,6 +18,7 @@ use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use tiny_http::{Header, Method, Response, ResponseBox, Server, StatusCode};
 
 use crate::store::{SecretStore, StoreError, default_store, validate_name};
+use crate::temp::{self, TempRegistry};
 use crate::util::shtum_exe_path;
 use auth::{AuthResult, Token};
 use html::{Flash, FlashKind};
@@ -62,9 +63,27 @@ pub fn run(opts: DashboardOpts) -> Result<i32> {
 
     let store = default_store();
     let shtum_path = shtum_exe_path().unwrap_or_else(|_| "shtum".to_string());
+    // Registry is opened once and reused for the lifetime of the process.
+    // open_default only fails when HOME is unset, which is fatal for our
+    // sweep path too — fall through to "no registry" mode (the temp-key
+    // surface won't render but everything else keeps working).
+    let registry = TempRegistry::open_default().ok();
+    if registry.is_none() {
+        eprintln!(
+            "[shtum dashboard] could not open temp-key registry; \
+             temp-key surface (Quick stash, TEMP badges, Extend) will be hidden"
+        );
+    }
 
     for request in server.incoming_requests() {
-        if let Err(e) = handle(request, &token, bound_port, &store, &shtum_path) {
+        if let Err(e) = handle(
+            request,
+            &token,
+            bound_port,
+            &store,
+            &shtum_path,
+            registry.as_ref(),
+        ) {
             eprintln!("[shtum dashboard] request error: {e:#}");
         }
     }
@@ -114,15 +133,27 @@ fn bind(port: Option<u16>) -> Result<TcpListener> {
 /// GET requests: Host check + token from query string, then dispatch.
 /// POST requests: Host check only; each POST handler reads the body and
 /// verifies the token from the form fields (cookie-free CSRF protection).
+///
+/// A lazy temp-key sweep runs at the top of every request so expired
+/// `TMP_*` entries disappear from the listing the moment a real user
+/// loads the page — no daemon, no background timer.
 fn handle(
     mut request: tiny_http::Request,
     token: &Token,
     port: u16,
     store: &dyn SecretStore,
     shtum_path: &str,
+    registry: Option<&TempRegistry>,
 ) -> Result<()> {
     let method_for_log = format!("{:?}", request.method()).to_uppercase();
     let url_for_log = request.url().to_string();
+
+    // Lazy sweep: cheap (one flock + one tiny JSON read) and keeps the
+    // user-visible state honest. Errors are logged inside, never
+    // propagated to the request.
+    if registry.is_some() {
+        temp::sweep_default(store);
+    }
 
     let host_ok = auth::host_header(&request)
         .map(|h| auth::host_ok(h, port))
@@ -132,11 +163,11 @@ fn handle(
     } else {
         match request.method() {
             Method::Get => match auth::check_get(&request, token, port) {
-                AuthResult::Ok => dispatch_get(&request, token, store, shtum_path),
+                AuthResult::Ok => dispatch_get(&request, token, store, shtum_path, registry),
                 AuthResult::BadHost => error_response(421, "misdirected request"),
                 AuthResult::BadToken => error_response(403, "missing or invalid token"),
             },
-            Method::Post => dispatch_post(&mut request, token, store, shtum_path),
+            Method::Post => dispatch_post(&mut request, token, store, shtum_path, registry),
             _ => error_response(405, "method not allowed"),
         }
     };
@@ -193,6 +224,7 @@ fn dispatch_get(
     token: &Token,
     store: &dyn SecretStore,
     shtum_path: &str,
+    registry: Option<&TempRegistry>,
 ) -> Resp {
     let (path, query) = split_path_query(request.url());
     match match_get_route(path) {
@@ -201,7 +233,7 @@ fn dispatch_get(
             let flash = flash_owned
                 .as_ref()
                 .map(|(kind, msg)| Flash { kind: *kind, message: msg.as_str() });
-            index_page(token, store, shtum_path, flash)
+            index_page(token, store, shtum_path, flash, registry)
         }
         GetRoute::Reveal(name) => handle_reveal(store, name),
         GetRoute::NotFound => error_response(404, "not found"),
@@ -238,6 +270,7 @@ fn dispatch_post(
     token: &Token,
     store: &dyn SecretStore,
     _shtum_path: &str,
+    registry: Option<&TempRegistry>,
 ) -> Resp {
     let (path, _query) = split_path_query(request.url());
     let route = match_post_route(path).into_owned();
@@ -268,6 +301,8 @@ fn dispatch_post(
         OwnedRoute::Rotate(name) => handle_rotate(store, &name, &form, token),
         OwnedRoute::Rename(name) => handle_rename(store, &name, &form, token),
         OwnedRoute::Delete(name) => handle_delete(store, &name, token),
+        OwnedRoute::Quick => handle_quick(store, registry, &form, token),
+        OwnedRoute::Extend(name) => handle_extend(registry, &name, token),
         OwnedRoute::NotFound => unreachable!("guarded above"),
     }
 }
@@ -277,6 +312,8 @@ enum PostRoute<'a> {
     Rotate(&'a str),
     Rename(&'a str),
     Delete(&'a str),
+    Quick,
+    Extend(&'a str),
     NotFound,
 }
 
@@ -285,6 +322,8 @@ enum OwnedRoute {
     Rotate(String),
     Rename(String),
     Delete(String),
+    Quick,
+    Extend(String),
     NotFound,
 }
 
@@ -295,6 +334,8 @@ impl PostRoute<'_> {
             PostRoute::Rotate(s) => OwnedRoute::Rotate(s.to_string()),
             PostRoute::Rename(s) => OwnedRoute::Rename(s.to_string()),
             PostRoute::Delete(s) => OwnedRoute::Delete(s.to_string()),
+            PostRoute::Quick => OwnedRoute::Quick,
+            PostRoute::Extend(s) => OwnedRoute::Extend(s.to_string()),
             PostRoute::NotFound => OwnedRoute::NotFound,
         }
     }
@@ -303,6 +344,9 @@ impl PostRoute<'_> {
 fn match_post_route(path: &str) -> PostRoute<'_> {
     if path == "/secrets/add" {
         return PostRoute::Add;
+    }
+    if path == "/secrets/quick" {
+        return PostRoute::Quick;
     }
     if let Some(rest) = path.strip_prefix("/secrets/") {
         if let Some(name) = rest.strip_suffix("/rotate") {
@@ -318,6 +362,11 @@ fn match_post_route(path: &str) -> PostRoute<'_> {
         if let Some(name) = rest.strip_suffix("/delete") {
             if !name.is_empty() && !name.contains('/') {
                 return PostRoute::Delete(name);
+            }
+        }
+        if let Some(name) = rest.strip_suffix("/extend") {
+            if !name.is_empty() && !name.contains('/') {
+                return PostRoute::Extend(name);
             }
         }
     }
@@ -516,6 +565,133 @@ fn handle_rename(
     }
 }
 
+/// Quick stash from the dashboard: paste a value, get back an
+/// auto-generated `TMP_*` name + 4h-idle TTL (or the user's `ttl` if
+/// supplied). Mirrors the CLI's `shtum quick` semantics.
+fn handle_quick(
+    store: &dyn SecretStore,
+    registry: Option<&TempRegistry>,
+    form: &HashMap<String, String>,
+    token: &Token,
+) -> Resp {
+    let Some(registry) = registry else {
+        return redirect_with_flash(
+            token,
+            FlashKind::Error,
+            "temp-key registry is unavailable — Quick stash is disabled",
+        );
+    };
+    let value = match form.get("value") {
+        Some(v) if !v.is_empty() => v.as_bytes(),
+        _ => return redirect_with_flash(token, FlashKind::Error, "value is required"),
+    };
+    let ttl = match form.get("ttl").map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        Some(s) => match temp::parse_ttl(s) {
+            Ok(d) => d,
+            Err(e) => return redirect_with_flash(token, FlashKind::Error, &e),
+        },
+        None => std::time::Duration::from_secs(temp::DEFAULT_TTL_SECONDS),
+    };
+
+    // Generate-and-add with collision retry — same logic as the CLI.
+    let mut last_err: Option<StoreError> = None;
+    let mut chosen: Option<String> = None;
+    for _ in 0..10 {
+        let candidate = match temp::generate_temp_name() {
+            Ok(n) => n,
+            Err(e) => {
+                return redirect_with_flash(
+                    token,
+                    FlashKind::Error,
+                    &format!("failed to generate temp-key name: {e}"),
+                );
+            }
+        };
+        match store.add(&candidate, value, false) {
+            Ok(()) => {
+                chosen = Some(candidate);
+                break;
+            }
+            Err(StoreError::AlreadyExists(_)) => continue,
+            Err(e) => {
+                last_err = Some(e);
+                break;
+            }
+        }
+    }
+    let name = match chosen {
+        Some(n) => n,
+        None => {
+            let msg = match last_err {
+                Some(e) => format!("failed to store temp value: {e}"),
+                None => "could not find an unused TMP_* name after 10 attempts".to_string(),
+            };
+            return redirect_with_flash(token, FlashKind::Error, &msg);
+        }
+    };
+
+    if let Err(e) = registry.register(&name, ttl) {
+        // Roll back the Keychain entry so we don't leave an unregistered
+        // TMP_* lying around. Best effort — log if even the rollback fails.
+        if let Err(re) = store.delete(&name) {
+            eprintln!(
+                "[shtum dashboard] failed to roll back `{name}` after registry error: {re}"
+            );
+        }
+        return redirect_with_flash(
+            token,
+            FlashKind::Error,
+            &format!("failed to register temp key: {e}"),
+        );
+    }
+
+    redirect_with_flash(
+        token,
+        FlashKind::Info,
+        &format!(
+            "stashed `{name}`, expires after {} idle",
+            temp::format_duration_compact(ttl),
+        ),
+    )
+}
+
+/// Dashboard "Extend" button: bump `last_used_at` to now. Returns a
+/// flash either way — succeeds quietly for tracked names, complains
+/// when called for an unknown name (likely a stale tab).
+fn handle_extend(
+    registry: Option<&TempRegistry>,
+    name_in_path: &str,
+    token: &Token,
+) -> Resp {
+    if let Err(e) = validate_name(name_in_path) {
+        return redirect_with_flash(token, FlashKind::Error, &format!("{e}"));
+    }
+    let Some(registry) = registry else {
+        return redirect_with_flash(
+            token,
+            FlashKind::Error,
+            "temp-key registry is unavailable — Extend is disabled",
+        );
+    };
+    match registry.extend(name_in_path) {
+        Ok(true) => redirect_with_flash(
+            token,
+            FlashKind::Info,
+            &format!("extended `{name_in_path}`"),
+        ),
+        Ok(false) => redirect_with_flash(
+            token,
+            FlashKind::Error,
+            &format!("`{name_in_path}` is not a tracked temp key"),
+        ),
+        Err(e) => redirect_with_flash(
+            token,
+            FlashKind::Error,
+            &format!("failed to extend: {e}"),
+        ),
+    }
+}
+
 fn handle_delete(store: &dyn SecretStore, name_in_path: &str, token: &Token) -> Resp {
     if let Err(e) = validate_name(name_in_path) {
         return redirect_with_flash(token, FlashKind::Error, &format!("{e}"));
@@ -569,6 +745,7 @@ fn index_page(
     store: &dyn SecretStore,
     shtum_path: &str,
     flash: Option<Flash<'_>>,
+    registry: Option<&TempRegistry>,
 ) -> Resp {
     let secrets = match store.list() {
         Ok(names) => names,
@@ -579,7 +756,24 @@ fn index_page(
             );
         }
     };
-    let body = html::list_page(&secrets, token.as_str(), shtum_path, flash);
+    let temp_entries: Vec<html::TempEntryView> = registry
+        .map(|r| {
+            r.snapshot()
+                .into_iter()
+                .map(|e| html::TempEntryView {
+                    expires_at: e.expires_at(),
+                    name: e.name,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let body = html::list_page(
+        &secrets,
+        &temp_entries,
+        token.as_str(),
+        shtum_path,
+        flash,
+    );
     html_response(200, &body)
 }
 
@@ -836,7 +1030,34 @@ mod tests {
             PostRoute::Rotate(n) => format!("Rotate({n})"),
             PostRoute::Rename(n) => format!("Rename({n})"),
             PostRoute::Delete(n) => format!("Delete({n})"),
+            PostRoute::Quick => "Quick".into(),
+            PostRoute::Extend(n) => format!("Extend({n})"),
             PostRoute::NotFound => "NotFound".into(),
         }
+    }
+
+    #[test]
+    fn match_post_route_quick_exact() {
+        assert!(matches!(match_post_route("/secrets/quick"), PostRoute::Quick));
+    }
+
+    #[test]
+    fn match_post_route_extend_extracts_name() {
+        match match_post_route("/secrets/TMP_abc123/extend") {
+            PostRoute::Extend("TMP_abc123") => {}
+            other => panic!("unexpected: {}", debug_route(&other)),
+        }
+    }
+
+    #[test]
+    fn match_post_route_extend_rejects_empty_or_nested() {
+        assert!(matches!(
+            match_post_route("/secrets//extend"),
+            PostRoute::NotFound,
+        ));
+        assert!(matches!(
+            match_post_route("/secrets/foo/bar/extend"),
+            PostRoute::NotFound,
+        ));
     }
 }

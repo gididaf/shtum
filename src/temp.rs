@@ -278,6 +278,21 @@ impl TempRegistry {
     }
 }
 
+/// Best-effort sweep at the default registry path. Used by every code
+/// path that surfaces or resolves Keychain entries (`shtum run`, `shtum
+/// store list`, `shtum quick`, dashboard request handlers) so expired
+/// temp keys disappear lazily. Never propagates an error: an unwritable
+/// HOME or backend hiccup must not break the caller's actual command.
+pub fn sweep_default<S: SecretStore + ?Sized>(store: &S) {
+    let Ok(registry) = TempRegistry::open_default() else {
+        return;
+    };
+    let report = registry.sweep(store);
+    for (name, err) in &report.errored {
+        eprintln!("shtum: failed to remove expired temp key `{name}`: {err}");
+    }
+}
+
 /// Narrow contract that `inject::build_plan` consumes to bump idle timers
 /// on temp keys after their values have been resolved for a `shtum run`.
 /// Lives behind a trait so tests can supply a capturing mock without

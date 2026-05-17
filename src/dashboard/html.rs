@@ -40,6 +40,15 @@ pub struct Flash<'a> {
     pub message: &'a str,
 }
 
+/// Minimal projection of a temp-key registry entry, just the bits the
+/// dashboard needs to render the row. Mod.rs owns the
+/// registry-snapshot → view conversion so html.rs has zero registry-
+/// type dependencies.
+pub struct TempEntryView {
+    pub name: String,
+    pub expires_at: u64,
+}
+
 /// Single dark-theme stylesheet, kept in one place so the page template
 /// stays readable. Linked as inline `<style>` (CSP allows `style-src
 /// 'unsafe-inline'`).
@@ -313,6 +322,35 @@ input::placeholder { color: #4b5563; }
 .ref-note { color: var(--text-muted); font-size: 0.82rem; margin: 0.6rem 0 0; }
 
 .muted { color: var(--text-muted); }
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.15rem 0.55rem;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.badge--temp {
+  background: #2a2014;
+  border: 1px solid #5a4324;
+  color: #f3cf86;
+}
+.badge--temp.is-expired {
+  background: var(--danger-bg);
+  border-color: var(--danger-border);
+  color: var(--danger-fg);
+}
+.badge__label { opacity: 0.75; }
+.badge__time { font-variant-numeric: tabular-nums; }
+
+.extend-form { margin: 0; display: inline-block; }
+.extend-form button { padding: 0.3rem 0.6rem; font-size: 0.78rem; }
 "#;
 
 /// Inline JS: reveal/hide, copy, edit-panel toggle, and a generic
@@ -412,6 +450,38 @@ const SCRIPT: &str = r#"
 })();
 
 (function() {
+  // Per-row TEMP badge countdown. Server renders the absolute expiry
+  // epoch in `data-expires-at`; this ticker formats the remaining time
+  // client-side so a long-open tab stays accurate without re-fetch.
+  function fmt(s) {
+    if (s <= 0) return 'expired';
+    if (s >= 86400) return Math.floor(s/86400) + 'd ' + Math.floor((s%86400)/3600) + 'h';
+    if (s >= 3600) return Math.floor(s/3600) + 'h ' + Math.floor((s%3600)/60) + 'm';
+    if (s >= 60) return Math.floor(s/60) + 'm ' + (s%60) + 's';
+    return s + 's';
+  }
+  function tick() {
+    var nodes = document.querySelectorAll('[data-expires-at]');
+    if (!nodes.length) return;
+    var now = Math.floor(Date.now() / 1000);
+    nodes.forEach(function(b) {
+      var exp = parseInt(b.dataset.expiresAt, 10);
+      if (isNaN(exp)) return;
+      var rem = exp - now;
+      var t = b.querySelector('.badge__time');
+      if (t) t.textContent = fmt(rem);
+      if (rem <= 0) {
+        b.classList.add('is-expired');
+      } else {
+        b.classList.remove('is-expired');
+      }
+    });
+  }
+  tick();
+  if (document.querySelector('[data-expires-at]')) setInterval(tick, 1000);
+})();
+
+(function() {
   var tabs = Array.prototype.slice.call(document.querySelectorAll('[role="tab"]'));
   if (!tabs.length) return;
   function activate(target, focus) {
@@ -459,14 +529,25 @@ const SCRIPT: &str = r#"
 
 /// Render the dashboard index. The session token is embedded in every
 /// form as a hidden field so each POST can be verified server-side
-/// without relying on cookies.
+/// without relying on cookies. Names in `temp_entries` are rendered
+/// with a per-row TEMP badge + Extend button; their `expires_at`
+/// drives the client-side countdown.
 pub fn list_page(
     secrets: &[String],
+    temp_entries: &[TempEntryView],
     token: &str,
     shtum_path: &str,
     flash: Option<Flash<'_>>,
 ) -> String {
     let token_esc = escape(token);
+
+    // O(1) lookup from name → expires_at for the row renderer. Names
+    // already pass `validate_name` so no fancy hashing or normalisation
+    // is needed.
+    let temp_lookup: std::collections::HashMap<&str, u64> = temp_entries
+        .iter()
+        .map(|t| (t.name.as_str(), t.expires_at))
+        .collect();
 
     let flash_html = flash
         .map(|f| {
@@ -477,6 +558,18 @@ pub fn list_page(
             format!(r#"<div class="{}">{}</div>"#, class, escape(f.message))
         })
         .unwrap_or_default();
+
+    let quick_form = format!(
+        r#"<div class="card add-card">
+<form class="form-row" action="/secrets/quick" method="post" autocomplete="off">
+<input type="hidden" name="token" value="{token}">
+<div class="field field--grow"><label for="quick-value">Value</label><input id="quick-value" type="password" name="value" placeholder="(hidden) — stash and get an auto-name back" required></div>
+<div class="field"><label for="quick-ttl">Idle TTL</label><input id="quick-ttl" type="text" name="ttl" placeholder="4h" pattern="[0-9]+[smhd]"></div>
+<div class="field field--actions"><button type="submit" class="btn btn--primary">Quick stash</button></div>
+</form>
+</div>"#,
+        token = token_esc,
+    );
 
     let add_form = format!(
         r#"<div class="card add-card">
@@ -495,7 +588,7 @@ pub fn list_page(
     } else {
         let rows: String = secrets
             .iter()
-            .map(|name| render_secret_row(name, &token_esc))
+            .map(|name| render_secret_row(name, &token_esc, temp_lookup.get(name.as_str()).copied()))
             .collect();
         format!(
             r#"<div class="secret-list">
@@ -546,6 +639,11 @@ pub fn list_page(
 {flash_html}
 
 <section id="panel-keys" role="tabpanel" aria-labelledby="tab-keys">
+
+<section class="section">
+<header class="section__head"><h2>Quick stash</h2><p class="section__sub">Paste a one-off value — get back an auto-generated <code>TMP_XXXXXX</code> name. Auto-removes after the idle window with no <code>shtum run</code> reference and no Extend press. Default 4h.</p></header>
+{quick_form}
+</section>
 
 <section class="section">
 <header class="section__head"><h2>Add a secret</h2><p class="section__sub">Names live in the macOS Keychain. Values are never logged.</p></header>
@@ -656,18 +754,29 @@ pub fn list_page(
 /// if the user agrees to overwrite). The delete form keeps an
 /// `onsubmit` confirm() so a misclicked Delete still asks for
 /// confirmation even if the page-level JS errored out.
-fn render_secret_row(name: &str, token_esc: &str) -> String {
+fn render_secret_row(name: &str, token_esc: &str, temp_expires_at: Option<u64>) -> String {
     let name_esc = escape(name);
     let confirm_msg = escape(&format!(
         "Delete \"{name}\" from the Keychain? This cannot be undone.",
     ));
     let panel_id = format!("edit-{name_esc}");
+    // TEMP badge + Extend button only when the registry tracks this name.
+    // The countdown JS reads `data-expires-at` and ticks the inner
+    // `.badge__time` text once per second.
+    let temp_surface = match temp_expires_at {
+        Some(exp) => format!(
+            r#"<span class="badge badge--temp" data-expires-at="{exp}"><span class="badge__label">TEMP</span><span class="badge__time">…</span></span>
+<form class="extend-form" action="/secrets/{name_esc}/extend" method="post"><input type="hidden" name="token" value="{token_esc}"><button type="submit" class="btn btn--ghost">Extend</button></form>
+"#,
+        ),
+        None => String::new(),
+    };
     format!(
         r#"<div class="secret-row">
 <div class="secret-row__main">
 <div class="secret-name">{name_esc}</div>
 <div class="secret-row__actions">
-<button type="button" class="btn btn--ghost" data-action="reveal" data-name="{name_esc}">Reveal</button>
+{temp_surface}<button type="button" class="btn btn--ghost" data-action="reveal" data-name="{name_esc}">Reveal</button>
 <span class="value-display"></span>
 <button type="button" class="btn btn--ghost btn--toggle" data-action="toggle-edit" data-name="{name_esc}" aria-expanded="false" aria-controls="{panel_id}">Edit <span class="caret">&#9662;</span></button>
 </div>
@@ -762,7 +871,7 @@ mod tests {
 
     #[test]
     fn list_page_empty_state_renders_friendly_message_and_add_form() {
-        let html = list_page(&[], "tok", "/usr/local/bin/shtum", None);
+        let html = list_page(&[], &[], "tok", "/usr/local/bin/shtum", None);
         assert!(html.contains("No secrets stored yet"));
         assert!(!html.contains(r#"class="secret-list""#));
         assert!(html.contains(r#"action="/secrets/add""#));
@@ -771,7 +880,7 @@ mod tests {
     #[test]
     fn list_page_renders_per_row_rotate_rename_and_delete_forms() {
         let names = vec!["AWS_KEY".to_string(), "GH_TOKEN".to_string()];
-        let html = list_page(&names, "tok", "/usr/local/bin/shtum", None);
+        let html = list_page(&names, &[], "tok", "/usr/local/bin/shtum", None);
         assert!(html.contains(r#"action="/secrets/AWS_KEY/rotate""#));
         assert!(html.contains(r#"action="/secrets/AWS_KEY/rename""#));
         assert!(html.contains(r#"action="/secrets/AWS_KEY/delete""#));
@@ -790,7 +899,7 @@ mod tests {
         // declare which input holds the candidate name, and (c) declare
         // its current name so the JS knows when to skip a same-name no-op.
         let names = vec!["FOO".to_string()];
-        let html = list_page(&names, "tok", "/usr/local/bin/shtum", None);
+        let html = list_page(&names, &[], "tok", "/usr/local/bin/shtum", None);
         assert!(html.contains(r#"action="/secrets/FOO/rename""#));
         assert!(html.contains(r#"name="new_name""#));
         assert!(html.contains(r#"data-confirm-overwrite"#));
@@ -807,7 +916,7 @@ mod tests {
         // Same generic confirm-on-collision wiring as Rename, but with
         // `name` as the candidate input and no `data-current-name`
         // (Add has no current name to compare against).
-        let html = list_page(&[], "tok", "/usr/local/bin/shtum", None);
+        let html = list_page(&[], &[], "tok", "/usr/local/bin/shtum", None);
         // Find the add form and assert its attrs without false-positives
         // from any other form on the page.
         let add_form_idx = html
@@ -829,7 +938,7 @@ mod tests {
     #[test]
     fn list_page_embeds_secret_names_for_collision_check() {
         let names = vec!["AWS_KEY".to_string(), "GH_TOKEN".to_string()];
-        let html = list_page(&names, "tok", "/usr/local/bin/shtum", None);
+        let html = list_page(&names, &[], "tok", "/usr/local/bin/shtum", None);
         // The body carries the names as a JSON array in a data attribute
         // (HTML-escaped: `"` becomes `&quot;`). The JS reads + parses it.
         assert!(html.contains(r#"data-secret-names="[&quot;AWS_KEY&quot;,&quot;GH_TOKEN&quot;]""#));
@@ -837,7 +946,7 @@ mod tests {
 
     #[test]
     fn list_page_embeds_empty_names_array_when_no_secrets() {
-        let html = list_page(&[], "tok", "/usr/local/bin/shtum", None);
+        let html = list_page(&[], &[], "tok", "/usr/local/bin/shtum", None);
         assert!(html.contains(r#"data-secret-names="[]""#));
     }
 
@@ -847,7 +956,7 @@ mod tests {
         // section's <h4> must appear earlier in the document than the
         // Rotate section's <h4>.
         let names = vec!["FOO".to_string()];
-        let html = list_page(&names, "tok", "/usr/local/bin/shtum", None);
+        let html = list_page(&names, &[], "tok", "/usr/local/bin/shtum", None);
         let rename_idx = html.find("<h4>Rename</h4>").expect("rename section present");
         let rotate_idx = html.find("<h4>Rotate value</h4>").expect("rotate section present");
         assert!(
@@ -859,7 +968,7 @@ mod tests {
     #[test]
     fn list_page_edit_panel_is_hidden_by_default() {
         let names = vec!["FOO".to_string()];
-        let html = list_page(&names, "tok", "/usr/local/bin/shtum", None);
+        let html = list_page(&names, &[], "tok", "/usr/local/bin/shtum", None);
         // The panel is an `<div class="secret-edit" id="edit-FOO" hidden>` —
         // toggled to visible by the inline JS when Edit is clicked.
         assert!(html.contains(r#"id="edit-FOO" hidden"#));
@@ -870,24 +979,99 @@ mod tests {
     #[test]
     fn list_page_embeds_token_in_every_form() {
         let names = vec!["FOO".to_string()];
-        let html = list_page(&names, "TESTTOKEN", "/usr/local/bin/shtum", None);
-        // Add + rotate + rename + delete = 4 hidden token inputs per row
-        // (the flash banner does not embed the token).
+        let html = list_page(&names, &[], "TESTTOKEN", "/usr/local/bin/shtum", None);
+        // Quick stash + add + rotate + rename + delete = 5 hidden token
+        // inputs per row, with no temp keys to add Extend forms.
         let count = html.matches(r#"name="token" value="TESTTOKEN""#).count();
-        assert_eq!(count, 4, "expected 4 hidden token inputs, found {count}");
+        assert_eq!(count, 5, "expected 5 hidden token inputs, found {count}");
+    }
+
+    #[test]
+    fn list_page_renders_quick_stash_card_above_add_card() {
+        let html = list_page(&[], &[], "tok", "/usr/local/bin/shtum", None);
+        let quick_idx = html
+            .find(r#"action="/secrets/quick""#)
+            .expect("quick form must be present");
+        let add_idx = html
+            .find(r#"action="/secrets/add""#)
+            .expect("add form must be present");
+        assert!(
+            quick_idx < add_idx,
+            "Quick stash card ({quick_idx}) should appear before Add card ({add_idx})"
+        );
+        // Form has a value field and an optional ttl field, plus the
+        // hidden token. No name field — names are auto-generated.
+        let quick_open = html[..quick_idx]
+            .rfind("<form")
+            .expect("quick form must have opening tag");
+        let quick_close = quick_idx
+            + html[quick_idx..]
+                .find("</form>")
+                .expect("quick form must close");
+        let quick_html = &html[quick_open..=quick_close];
+        assert!(quick_html.contains(r#"name="value""#));
+        assert!(quick_html.contains(r#"name="ttl""#));
+        assert!(quick_html.contains(r#"name="token""#));
+        assert!(!quick_html.contains(r#"name="name""#));
+    }
+
+    #[test]
+    fn list_page_renders_temp_badge_only_for_tracked_rows() {
+        let names = vec!["FOO".to_string(), "TMP_abc123".to_string()];
+        let temp = vec![TempEntryView {
+            name: "TMP_abc123".to_string(),
+            expires_at: 9_999_999_999,
+        }];
+        let html = list_page(&names, &temp, "tok", "/usr/local/bin/shtum", None);
+        // Badge exists for TMP_abc123 with the right epoch.
+        assert!(html.contains(r#"data-expires-at="9999999999""#));
+        // Exactly one badge — FOO is not in the temp set.
+        let badge_count = html.matches(r#"class="badge badge--temp""#).count();
+        assert_eq!(badge_count, 1, "expected 1 TEMP badge, found {badge_count}");
+        // Extend form points at TMP_abc123, not FOO.
+        assert!(html.contains(r#"action="/secrets/TMP_abc123/extend""#));
+        assert!(!html.contains(r#"action="/secrets/FOO/extend""#));
+    }
+
+    #[test]
+    fn list_page_temp_badge_absent_when_no_temp_entries() {
+        let names = vec!["FOO".to_string()];
+        let html = list_page(&names, &[], "tok", "/usr/local/bin/shtum", None);
+        assert!(!html.contains(r#"class="badge badge--temp""#));
+        assert!(!html.contains(r#"action="/secrets/FOO/extend""#));
+    }
+
+    #[test]
+    fn list_page_extend_form_carries_token() {
+        let names = vec!["TMP_abc123".to_string()];
+        let temp = vec![TempEntryView {
+            name: "TMP_abc123".to_string(),
+            expires_at: 9_999_999_999,
+        }];
+        let html = list_page(&names, &temp, "EXTEND_TOK", "/usr/local/bin/shtum", None);
+        // CSRF: Extend POST must include the session token.
+        let extend_idx = html
+            .find(r#"action="/secrets/TMP_abc123/extend""#)
+            .expect("extend form must be present");
+        let extend_close = extend_idx
+            + html[extend_idx..]
+                .find("</form>")
+                .expect("extend form must close");
+        let extend_html = &html[extend_idx..=extend_close];
+        assert!(extend_html.contains(r#"name="token" value="EXTEND_TOK""#));
     }
 
     #[test]
     fn list_page_delete_form_has_confirm() {
         let names = vec!["DANGEROUS".to_string()];
-        let html = list_page(&names, "tok", "/usr/local/bin/shtum", None);
+        let html = list_page(&names, &[], "tok", "/usr/local/bin/shtum", None);
         assert!(html.contains(r#"onsubmit="return confirm("#));
         assert!(html.contains("DANGEROUS"));
     }
 
     #[test]
     fn list_page_renders_hook_snippets() {
-        let html = list_page(&[], "tok", "/abs/path/to/shtum", None);
+        let html = list_page(&[], &[], "tok", "/abs/path/to/shtum", None);
         assert!(html.contains("/abs/path/to/shtum hook install"));
         assert!(html.contains("cd /path/to/your-project &amp;&amp; /abs/path/to/shtum hook install --project"));
     }
@@ -897,7 +1081,7 @@ mod tests {
         // P8b content blocks live inside the Docs panel. The render must
         // contain representative strings from each so future refactors of
         // index_page can't silently drop content.
-        let html = list_page(&[], "tok", "/usr/local/bin/shtum", None);
+        let html = list_page(&[], &[], "tok", "/usr/local/bin/shtum", None);
 
         // Placeholder reference: at least one source prefix and one mode
         // prefix from each table.
@@ -932,7 +1116,7 @@ mod tests {
 
     #[test]
     fn list_page_renders_tab_nav_with_keys_and_docs_panels() {
-        let html = list_page(&[], "tok", "/usr/local/bin/shtum", None);
+        let html = list_page(&[], &[], "tok", "/usr/local/bin/shtum", None);
         // Tablist with both tabs.
         assert!(html.contains(r#"role="tablist""#));
         assert!(html.contains(r#"id="tab-keys""#));
@@ -950,7 +1134,7 @@ mod tests {
 
     #[test]
     fn list_page_escapes_shtum_path_with_meta() {
-        let html = list_page(&[], "tok", "/weird/<path>/shtum", None);
+        let html = list_page(&[], &[], "tok", "/weird/<path>/shtum", None);
         assert!(!html.contains("/weird/<path>/shtum"));
         assert!(html.contains("/weird/&lt;path&gt;/shtum"));
     }
@@ -958,7 +1142,7 @@ mod tests {
     #[test]
     fn list_page_renders_info_flash() {
         let flash = Flash { kind: FlashKind::Info, message: "stored FOO" };
-        let html = list_page(&[], "tok", "/usr/local/bin/shtum", Some(flash));
+        let html = list_page(&[], &[], "tok", "/usr/local/bin/shtum", Some(flash));
         assert!(html.contains(r#"class="flash""#));
         assert!(html.contains("stored FOO"));
     }
@@ -966,14 +1150,14 @@ mod tests {
     #[test]
     fn list_page_renders_error_flash_with_distinct_class() {
         let flash = Flash { kind: FlashKind::Error, message: "name rejected" };
-        let html = list_page(&[], "tok", "/usr/local/bin/shtum", Some(flash));
+        let html = list_page(&[], &[], "tok", "/usr/local/bin/shtum", Some(flash));
         assert!(html.contains(r#"class="flash error""#));
         assert!(html.contains("name rejected"));
     }
 
     #[test]
     fn list_page_omits_flash_div_when_absent() {
-        let html = list_page(&[], "tok", "/usr/local/bin/shtum", None);
+        let html = list_page(&[], &[], "tok", "/usr/local/bin/shtum", None);
         assert!(!html.contains(r#"class="flash""#));
     }
 
