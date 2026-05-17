@@ -170,7 +170,11 @@ fn list_secrets(store: &impl SecretStore) -> Result<()> {
 fn run_quick(args: QuickArgs) -> Result<()> {
     let store = default_store();
     sweep_temp_keys(&store);
-    let value = read_value("new temp key", args.from_file.as_deref(), args.from_stdin)?;
+    let value = if let Some(v) = args.value {
+        v.into_bytes()
+    } else {
+        read_value("new temp key", args.from_file.as_deref(), args.from_stdin)?
+    };
     if value.is_empty() {
         anyhow::bail!("refusing to store an empty value");
     }

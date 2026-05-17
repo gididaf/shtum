@@ -208,13 +208,24 @@ pub struct RotateArgs {
 
 #[derive(clap::Args, Debug)]
 pub struct QuickArgs {
-    /// Read the value from this file instead of prompting. A single trailing
-    /// newline is stripped.
+    /// The value to stash. Simplest form: `shtum quick "your secret"`.
+    /// Mutually exclusive with `--from-stdin` and `--from-file`.
+    ///
+    /// Omit to fall back: with a TTY, a hidden prompt is shown; with
+    /// piped stdin, the value is read from stdin automatically.
+    #[arg(
+        value_name = "VALUE",
+        conflicts_with_all = ["from_file", "from_stdin"],
+    )]
+    pub value: Option<String>,
+
+    /// Read the value from this file instead. A single trailing newline is
+    /// stripped.
     #[arg(long, value_name = "PATH", conflicts_with = "from_stdin")]
     pub from_file: Option<PathBuf>,
 
-    /// Read the value from stdin instead of prompting. A single trailing
-    /// newline is stripped.
+    /// Read the value from stdin instead. A single trailing newline is
+    /// stripped.
     #[arg(long, conflicts_with = "from_file")]
     pub from_stdin: bool,
 
