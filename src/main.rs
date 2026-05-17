@@ -170,8 +170,42 @@ fn rename_secret(store: &impl SecretStore, args: RenameArgs) -> Result<()> {
 fn list_secrets(store: &impl SecretStore) -> Result<()> {
     sweep_temp_keys(store);
     let names = store.list().context("failed to list secrets")?;
+    // Best-effort registry snapshot for annotation. If the registry can't
+    // be opened (HOME unset, unreadable file) we just skip the annotation
+    // and print plain names — listing must not fail on registry trouble.
+    let temp_map: std::collections::HashMap<String, u64> = temp::TempRegistry::open_default()
+        .ok()
+        .map(|r| {
+            r.snapshot()
+                .into_iter()
+                .map(|e| {
+                    let exp = e.expires_at();
+                    (e.name, exp)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
     for n in names {
-        println!("{n}");
+        match temp_map.get(&n) {
+            Some(&exp) if exp > now => {
+                let remaining = std::time::Duration::from_secs(exp - now);
+                println!(
+                    "{n} (temp, expires in {})",
+                    temp::format_remaining(remaining),
+                );
+            }
+            Some(_) => {
+                // Expired but not yet swept (sweep is lazy and this same
+                // call already ran one — likely an open-fail or a
+                // backend error keeping the entry alive). Mark plainly.
+                println!("{n} (temp, expired)");
+            }
+            None => println!("{n}"),
+        }
     }
     Ok(())
 }

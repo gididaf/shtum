@@ -358,6 +358,43 @@ pub fn parse_ttl(s: &str) -> Result<Duration, String> {
     Ok(Duration::from_secs(secs))
 }
 
+/// Render a `Duration` as a human-readable "remaining" string, e.g.
+/// `3h 12m`, `47s`, `2d 4h`. Used by `shtum store list` to annotate
+/// temp-key rows. The dashboard does the equivalent in JS so the
+/// countdown can tick without re-fetch — keep the two formats in sync
+/// when you tweak one.
+pub fn format_remaining(d: Duration) -> String {
+    let secs = d.as_secs();
+    if secs == 0 {
+        return "0s".to_string();
+    }
+    if secs < 60 {
+        return format!("{secs}s");
+    }
+    if secs < 3600 {
+        let m = secs / 60;
+        let s = secs % 60;
+        if s == 0 {
+            return format!("{m}m");
+        }
+        return format!("{m}m {s}s");
+    }
+    if secs < 86_400 {
+        let h = secs / 3600;
+        let m = (secs % 3600) / 60;
+        if m == 0 {
+            return format!("{h}h");
+        }
+        return format!("{h}h {m}m");
+    }
+    let d = secs / 86_400;
+    let h = (secs % 86_400) / 3600;
+    if h == 0 {
+        return format!("{d}d");
+    }
+    format!("{d}d {h}h")
+}
+
 /// Render a `Duration` as a compact unit string (`30m`, `4h`, `2d`) for the
 /// stderr success note and dashboard countdown labels. Falls back to whole
 /// seconds when no larger unit divides evenly.
@@ -708,6 +745,18 @@ mod tests {
     #[test]
     fn parse_ttl_trims_whitespace() {
         assert_eq!(parse_ttl("  5m  ").unwrap(), Duration::from_secs(300));
+    }
+
+    #[test]
+    fn format_remaining_renders_two_largest_units() {
+        assert_eq!(format_remaining(Duration::from_secs(0)), "0s");
+        assert_eq!(format_remaining(Duration::from_secs(47)), "47s");
+        assert_eq!(format_remaining(Duration::from_secs(60)), "1m");
+        assert_eq!(format_remaining(Duration::from_secs(125)), "2m 5s");
+        assert_eq!(format_remaining(Duration::from_secs(3600)), "1h");
+        assert_eq!(format_remaining(Duration::from_secs(3 * 3600 + 12 * 60)), "3h 12m");
+        assert_eq!(format_remaining(Duration::from_secs(86_400)), "1d");
+        assert_eq!(format_remaining(Duration::from_secs(2 * 86_400 + 4 * 3600)), "2d 4h");
     }
 
     #[test]

@@ -78,6 +78,26 @@ shtum store rename CF_API_TOKEN CF_TOKEN --force  # overwrite an existing target
 shtum store rm CF_API_TOKEN
 ```
 
+## Quick stash (auto-name + auto-expiry)
+
+For a one-off value where you don't want to invent a name or remember to clean up:
+
+```bash
+shtum quick "FDde#2DFdf@@r2r"
+# TMP_a8f3k2
+# created temp key `TMP_a8f3k2`, expires after 4h idle. use as `{TMP_a8f3k2}` in `shtum run`.
+```
+
+Hand the returned `TMP_*` name to your agent and use it as a placeholder in any subsequent `shtum run`:
+
+```bash
+shtum run -- sshpass -p {TMP_a8f3k2} ssh user@host
+```
+
+Temp keys auto-expire after **4 hours of no use** — each `shtum run` that resolves the key resets the timer, so a back-and-forth chat with Claude keeps it alive as long as the conversation is actively using it. Override with `--ttl 30m` / `--ttl 2h` / `--ttl 1d` (min 60s, max 7d). The dashboard has a `Quick stash` card and per-row `Extend` button for the same flow. The Claude Code hook denies `shtum quick` from the agent itself — run it in your own terminal so the generated name stays out of the model's context.
+
+`shtum store list` annotates temp rows with their countdown: `TMP_a8f3k2 (temp, expires in 3h 12m)`.
+
 ## The three core flows
 
 ### Argv mode (default — placeholders substituted inline)

@@ -22,13 +22,15 @@ Single static Rust binary. Modules under `src/`:
 
 | Module | Role |
 |---|---|
-| `cli.rs` | clap-derived CLI surface (`store`, `run`, `hook` subcommands) |
+| `cli.rs` | clap-derived CLI surface (`store`, `run`, `hook`, `dashboard`, `quick` subcommands) |
 | `store/` | `SecretStore` trait + `KeychainStore` (macOS). Trait designed for Linux drop-in later |
-| `inject.rs` | Placeholder parser (two orthogonal axes: *Source* and *Mode*), `Plan` struct, resolution + substitution |
+| `inject.rs` | Placeholder parser (two orthogonal axes: *Source* and *Mode*), `Plan` struct, resolution + substitution. `build_plan` also takes an optional `&dyn TempTouch` and bumps temp-key idle timers on resolution. |
 | `tempfile.rs` | RAII guard for `{tempfile:NAME}` mode — creates mode-0600 files in `$TMPDIR`, unlinks on Drop |
+| `temp.rs` | Temp-key registry (sidecar JSON at `~/Library/Application Support/shtum/temp-keys.json`) + idle-TTL sweep + `TempTouch` trait for `inject::build_plan` to bump `last_used_at` on use. Powers `shtum quick` + dashboard Quick stash / TEMP badge / Extend. |
 | `exec.rs` | Subprocess spawn; pipes stdio through filters when redaction active; threads env-inject / stdin / tempfile through |
 | `redact.rs` | Sliding-window streaming filter with two layers (A = literal/URL-encoded/base64 of stored values, B = regex defaults + user `--redact` patterns), combined alternation regex via DFA |
-| `hook.rs` | Claude Code `PreToolUse` interceptor + `~/.claude/settings.json` JSON merge (`install` / `uninstall` / `show` / `handle`) |
+| `hook.rs` | Claude Code `PreToolUse` interceptor + `~/.claude/settings.json` JSON merge (`install` / `uninstall` / `show` / `handle`). Safety-net denies `shtum quick` from Claude. |
+| `dashboard/` | Local 127.0.0.1 web UI: token-gated CRUD for Keychain entries, plus Quick stash card / TEMP badges / Extend button for temp keys |
 | `main.rs` | Dispatch + glue |
 
 ---
@@ -57,6 +59,8 @@ If a request appears to contradict any of these, surface it before proceeding.
 - **Tempfile cleanup** is RAII on normal exit. Crash paths (SIGKILL, uncaught panic) leak the file; a startup sweep is deferred to v2.
 - **Config file:** deferred to v2. v1 is flag-driven only.
 - **Interactive/PTY:** deferred to v2 per PLAN.md §6.6.
+- **`{argv:NAME}` mode prefix:** kept in v1 for grammar symmetry, **planned for removal in v2.** Surfaced during a walkthrough: for the LLM-first audience it is functionally identical to bare `{NAME}` (same argv substitution, the stderr warning is not actionable by an agent), and the human-facing audit-annotation use case is too thin to justify a distinct prefix. Bare `{NAME}` will stand alone as the default-mode form; `{env-inject:}` / `{stdin:}` / `{tempfile:}` remain as the actual ps-leak mitigations.
+- **Temp keys (`shtum quick` + dashboard Quick stash):** auto-generated `TMP_<6 chars from [A-Za-z0-9]>` names, value stored in Keychain like any other secret, lifecycle metadata in `~/Library/Application Support/shtum/temp-keys.json` (sidecar JSON, schema `version: 1`, `flock`-serialised read-modify-write). Idle TTL: default 4h, configurable per-key via `--ttl <N>{s,m,h,d}` (min 60s, max 7d). Timer reset triggers: `shtum run` resolution that touches the name (excluding `--dry-run`), and the dashboard's `Extend` button. Sweep is lazy — runs at the start of every `shtum run`, `shtum store list`, and dashboard request — no daemon. Only registry-tracked names are sweep candidates; a user-named `TMP_foo` added via `store add` is unaffected. Renaming a temp key silently "promotes" it to permanent (orphan sidecar row swept on next Keychain-NotFound). Hook safety-net denies `shtum quick` from Claude with a hint pointing at the human-terminal pattern — running it from the agent would put the generated name (and any piped value) into the model's context, defeating the stash.
 
 ---
 

@@ -730,6 +730,28 @@ pub fn list_page(
 </table>
 </section>
 
+<section class="section">
+<header class="section__head"><h2>Temp keys (<code>shtum quick</code>)</h2><p class="section__sub">One-paste stash for throwaway secrets. Auto-generates a <code>TMP_XXXXXX</code> name and auto-removes after the idle window with no use. The card up on the Keys tab does the same thing from the browser.</p></header>
+
+<div class="card snippet-card">
+<div class="snippet-card__head"><h3>Stash a value, then reference it</h3><span class="muted">positional, file, or stdin — same forms as <code>store add</code></span></div>
+<div class="snippet"><pre id="snippet-quick-stash">shtum quick "FDde#2DFdf@@r2r"
+# TMP_a8f3k2
+shtum run -- sshpass -p {{TMP_a8f3k2}} ssh user@host</pre><button type="button" class="btn btn--ghost btn--copy" data-action="copy" data-target="snippet-quick-stash">Copy</button></div>
+</div>
+
+<table class="ref-table">
+<thead><tr><th>Behaviour</th><th>Detail</th></tr></thead>
+<tbody>
+<tr><td>Default TTL</td><td><code>4h</code> idle. Override with <code>--ttl 30m</code> / <code>--ttl 2h</code> / <code>--ttl 1d</code>. Min <code>60s</code>, max <code>7d</code>.</td></tr>
+<tr><td>Timer reset</td><td>Each <code>shtum run</code> that resolves the placeholder bumps <code>last_used_at</code> to now. The dashboard's <code>Extend</code> button does the same. <code>--dry-run</code> does NOT reset the timer.</td></tr>
+<tr><td>Sweep</td><td>Lazy. Runs at the start of every <code>shtum run</code> / <code>shtum store list</code> / dashboard request — no daemon.</td></tr>
+<tr><td>Sidecar</td><td><code>~/Library/Application Support/shtum/temp-keys.json</code>. Only registry-tracked names are sweep candidates; a key you manually <code>store add TMP_foo</code> is unaffected.</td></tr>
+<tr><td>Hook policy</td><td>The Claude Code <code>PreToolUse</code> hook denies <code>shtum quick</code> from Claude — running it from the agent would leak the generated name into the model's context. Run it from your own terminal.</td></tr>
+</tbody>
+</table>
+</section>
+
 </section>
 </main>
 
@@ -1074,6 +1096,21 @@ mod tests {
         let html = list_page(&[], &[], "tok", "/abs/path/to/shtum", None);
         assert!(html.contains("/abs/path/to/shtum hook install"));
         assert!(html.contains("cd /path/to/your-project &amp;&amp; /abs/path/to/shtum hook install --project"));
+    }
+
+    #[test]
+    fn list_page_docs_tab_includes_temp_keys_section() {
+        let html = list_page(&[], &[], "tok", "/usr/local/bin/shtum", None);
+        assert!(html.contains("Temp keys"));
+        assert!(html.contains(r#"id="snippet-quick-stash""#));
+        assert!(html.contains("shtum quick"));
+        assert!(html.contains("~/Library/Application Support/shtum/temp-keys.json"));
+        // Lives in the Docs panel, after the Runtime flags section.
+        let docs_open = html.find(r#"id="panel-docs""#).expect("docs panel present");
+        let temp_idx = html.find("Temp keys").expect("temp keys section present");
+        let flags_idx = html.find("Runtime flags").expect("flags section present");
+        assert!(temp_idx > docs_open);
+        assert!(temp_idx > flags_idx);
     }
 
     #[test]
