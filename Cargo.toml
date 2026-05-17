@@ -1,6 +1,6 @@
 [package]
 name = "shtum"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 description = "Secret-injecting command wrapper for AI agents — keeps credentials out of the LLM context."
 license = "Apache-2.0"

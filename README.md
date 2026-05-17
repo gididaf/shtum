@@ -1,6 +1,6 @@
 # shtum
 
-> **Status:** v0.2.0 — working on macOS. Linux deferred. Not yet published to package registries; build from source for now.
+> **Status:** v0.3.0 — working on macOS. Linux deferred. Not yet published to package registries; build from source for now.
 
 `shtum` is a local Rust CLI that lets an AI coding agent (Claude Code and similar) invoke authenticated commands **without ever holding the credentials in its own context window**. Secrets live in the macOS Keychain. The agent uses placeholder references like `{CF_TOKEN}`. `shtum` resolves them at exec time, runs the command, and scrubs the literal values back out of stdout/stderr before they reach the caller.
 
@@ -21,7 +21,7 @@ For the full design rationale and threat model, see [`PLAN.md`](./PLAN.md) and [
 Each tagged release publishes signed-by-SHA256 macOS tarballs for Apple Silicon and Intel. Download, verify, extract, drop on PATH:
 
 ```bash
-VERSION=v0.2.0
+VERSION=v0.3.0
 ARCH=$(uname -m); [ "$ARCH" = "arm64" ] && TARGET=aarch64-apple-darwin || TARGET=x86_64-apple-darwin
 curl -fsSL -O "https://github.com/gididaf/shtum/releases/download/${VERSION}/shtum-${VERSION}-${TARGET}.tar.gz"
 curl -fsSL -O "https://github.com/gididaf/shtum/releases/download/${VERSION}/SHA256SUMS"

@@ -4,6 +4,8 @@ All notable changes to `shtum` are recorded here. Format loosely follows [Keep a
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-05-17
+
 ### Added
 
 - **`shtum quick [VALUE]`** — stash a one-off secret under an auto-generated `TMP_<6 chars>` name and hand the name back. Value input is whichever you prefer: positional `shtum quick "FDde#2DFdf@@r2r"`, `--from-stdin`, `--from-file PATH`, or interactive hidden prompt (default on a TTY). Auto-expires after 4 hours of no use; each `shtum run` that resolves the key resets the timer. Override with `--ttl 30m|2h|1d` (min 60s, max 7d). Sidecar registry lives at `~/Library/Application Support/shtum/temp-keys.json`; only registry-tracked names are sweep candidates. The Claude Code hook safety-net denies `shtum quick` from the agent — generating a temp key from inside Claude would put the name into the model's context.
@@ -83,5 +85,6 @@ First working version. macOS only. Not yet published to package registries; buil
 - **Config file** deferred to v2 (flag-driven only in v1).
 
 [Unreleased]: #unreleased
+[0.3.0]: #030--2026-05-17
 [0.2.0]: #020--2026-05-14
 [0.1.0]: #010--2026-05-14
