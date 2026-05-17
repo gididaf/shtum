@@ -78,13 +78,22 @@ fn run_command(args: RunArgs) -> Result<i32> {
     if args.dry_run {
         // Resolve everything (so dry-run doubles as a reachability check),
         // then display the masked argv without ever using the real values.
-        let plan = inject::build_plan(&args.cmd, &store)?;
+        // No temp-key timer bump — dry-run is explicitly side-effect-free.
+        let plan = inject::build_plan(&args.cmd, &store, None)?;
         print_dry_run(&args.cmd, &plan);
         // RAII tempfiles drop here — they existed for milliseconds.
         drop(plan);
         Ok(0)
     } else {
-        let mut plan = inject::build_plan(&args.cmd, &store)?;
+        // Open the registry lazily — if HOME is unset or the dir is
+        // unwritable we still want `shtum run` to work for users who
+        // never touched `shtum quick`. A None temp-touch means "no bump"
+        // which is harmless (registry is empty anyway in that case).
+        let registry = temp::TempRegistry::open_default().ok();
+        let touch: Option<&dyn temp::TempTouch> = registry
+            .as_ref()
+            .map(|r| r as &dyn temp::TempTouch);
+        let mut plan = inject::build_plan(&args.cmd, &store, touch)?;
         let layer_a = !args.no_auto_redact;
         if layer_a && !plan.secrets.is_empty() {
             inject::enrich_with_store_secrets(&mut plan, &store)?;

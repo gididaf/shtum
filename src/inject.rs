@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use std::sync::OnceLock;
 
 use crate::store::{SecretStore, StoreError};
+use crate::temp::TempTouch;
 use crate::tempfile::TempFileGuard;
 
 /// How the resolved value reaches the subprocess.
@@ -174,7 +175,23 @@ pub struct Plan {
     pub already_fetched_keychain_names: Vec<String>,
 }
 
-pub fn build_plan(argv: &[String], store: &dyn SecretStore) -> Result<Plan> {
+/// Build the execution plan for `shtum run`.
+///
+/// `temp_touch` is the idle-timer hook: when `Some`, names that resolved
+/// against the Keychain (bare `{NAME}` or `{kc:NAME}`) are passed to
+/// `TempTouch::touch_for_run` so the temp-key registry can bump their
+/// `last_used_at`. `None` (used for dry-run) skips the bump — dry-run
+/// is explicitly side-effect-free.
+///
+/// The bump happens AFTER successful resolution and BEFORE exec, so a
+/// debugging loop where the wrapped command itself fails still counts
+/// as "the user used this key" (the failure is in their command, not
+/// in shtum's resolution).
+pub fn build_plan(
+    argv: &[String],
+    store: &dyn SecretStore,
+    temp_touch: Option<&dyn TempTouch>,
+) -> Result<Plan> {
     if argv.is_empty() {
         bail!("no command specified after `--`");
     }
@@ -316,6 +333,21 @@ pub fn build_plan(argv: &[String], store: &dyn SecretStore) -> Result<Plan> {
     already_fetched_keychain_names.sort();
     already_fetched_keychain_names.dedup();
 
+    // Bump idle timers on any of these names that are tracked as temp
+    // keys in the registry. The registry silently ignores names it
+    // doesn't track, so it's safe to pass non-temp Keychain names too.
+    // {env:...} and {file:...} sources are intentionally NOT touched —
+    // they don't correspond to Keychain entries, so they can't be temp.
+    if let Some(touch) = temp_touch {
+        if !already_fetched_keychain_names.is_empty() {
+            let refs: Vec<&str> = already_fetched_keychain_names
+                .iter()
+                .map(|s| s.as_str())
+                .collect();
+            touch.touch_for_run(&refs);
+        }
+    }
+
     let mut secrets: Vec<Vec<u8>> = values.into_values().filter(|v| !v.is_empty()).collect();
     secrets.sort();
     secrets.dedup();
@@ -429,6 +461,73 @@ fn strip_trailing_newline(b: &[u8]) -> &[u8] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::RefCell;
+    use std::collections::BTreeMap;
+
+    struct InjectMockStore {
+        items: RefCell<BTreeMap<String, Vec<u8>>>,
+    }
+    impl InjectMockStore {
+        fn seed(items: &[(&str, &[u8])]) -> Self {
+            let map: BTreeMap<String, Vec<u8>> = items
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_vec()))
+                .collect();
+            Self {
+                items: RefCell::new(map),
+            }
+        }
+    }
+    impl SecretStore for InjectMockStore {
+        fn get(&self, name: &str) -> Result<Vec<u8>, StoreError> {
+            self.items
+                .borrow()
+                .get(name)
+                .cloned()
+                .ok_or_else(|| StoreError::NotFound(name.to_string()))
+        }
+        fn set(&self, name: &str, value: &[u8]) -> Result<(), StoreError> {
+            self.items
+                .borrow_mut()
+                .insert(name.to_string(), value.to_vec());
+            Ok(())
+        }
+        fn delete(&self, name: &str) -> Result<(), StoreError> {
+            self.items
+                .borrow_mut()
+                .remove(name)
+                .map(|_| ())
+                .ok_or_else(|| StoreError::NotFound(name.to_string()))
+        }
+        fn list(&self) -> Result<Vec<String>, StoreError> {
+            Ok(self.items.borrow().keys().cloned().collect())
+        }
+    }
+
+    /// Capturing TempTouch for asserting which names get bumped per call.
+    struct MockTouch {
+        calls: RefCell<Vec<Vec<String>>>,
+    }
+    impl MockTouch {
+        fn new() -> Self {
+            Self {
+                calls: RefCell::new(Vec::new()),
+            }
+        }
+        fn calls(&self) -> Vec<Vec<String>> {
+            self.calls.borrow().clone()
+        }
+        fn total_names(&self) -> Vec<String> {
+            self.calls.borrow().iter().flatten().cloned().collect()
+        }
+    }
+    impl TempTouch for MockTouch {
+        fn touch_for_run(&self, names: &[&str]) {
+            self.calls
+                .borrow_mut()
+                .push(names.iter().map(|s| s.to_string()).collect());
+        }
+    }
 
     fn placeholders(segs: &[Segment]) -> Vec<&PlaceholderRef> {
         segs.iter()
@@ -486,6 +585,117 @@ mod tests {
     fn unknown_prefix_ignored() {
         let segs = parse_arg("{nope:thing}");
         assert!(placeholders(&segs).is_empty());
+    }
+
+    #[test]
+    fn touch_bumps_default_and_keychain_names_once_each() {
+        let store = InjectMockStore::seed(&[
+            ("FOO", b"foo-val"),
+            ("BAR", b"bar-val"),
+        ]);
+        let touch = MockTouch::new();
+        // Two refs to FOO (deduped), one to BAR via {kc:}, plus a literal.
+        let argv = vec![
+            "echo".to_string(),
+            "first={FOO}".to_string(),
+            "second={FOO}".to_string(),
+            "third={kc:BAR}".to_string(),
+        ];
+        let _ = build_plan(&argv, &store, Some(&touch)).expect("plan should build");
+        assert_eq!(touch.calls().len(), 1, "exactly one touch_for_run call");
+        let mut names = touch.total_names();
+        names.sort();
+        assert_eq!(names, vec!["BAR".to_string(), "FOO".to_string()]);
+    }
+
+    #[test]
+    fn touch_skips_env_and_file_sources() {
+        let store = InjectMockStore::seed(&[]);
+        let touch = MockTouch::new();
+        // Set an env var so the {env:...} placeholder resolves.
+        // SAFETY: this test process sets/unsets its own env vars.
+        unsafe {
+            std::env::set_var("INJECT_TEST_ENV_VAR", "hi");
+        }
+        // Create a file for {file:...}.
+        let dir = std::env::temp_dir().join(format!(
+            "shtum-inject-touch-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let fp = dir.join("v.txt");
+        std::fs::write(&fp, b"file-val").unwrap();
+
+        let argv = vec![
+            "echo".to_string(),
+            format!("env={{env:INJECT_TEST_ENV_VAR}}"),
+            format!("file={{file:{}}}", fp.display()),
+        ];
+        let _ = build_plan(&argv, &store, Some(&touch)).expect("plan should build");
+        // Neither env nor file sources should produce a touch call.
+        assert!(
+            touch.total_names().is_empty(),
+            "env/file placeholders should not bump the idle timer; got: {:?}",
+            touch.total_names()
+        );
+        unsafe {
+            std::env::remove_var("INJECT_TEST_ENV_VAR");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn touch_skipped_when_no_keychain_names_resolve() {
+        let store = InjectMockStore::seed(&[]);
+        let touch = MockTouch::new();
+        // No placeholders → nothing to touch.
+        let argv = vec!["echo".to_string(), "hello".to_string()];
+        let _ = build_plan(&argv, &store, Some(&touch)).expect("plan should build");
+        assert!(touch.total_names().is_empty());
+        assert!(touch.calls().is_empty(), "no Keychain names → no touch_for_run call");
+    }
+
+    #[test]
+    fn touch_none_means_no_bump_dry_run_carve_out() {
+        let store = InjectMockStore::seed(&[("FOO", b"v")]);
+        // Passing None as the temp_touch — dry-run path's wiring.
+        let _ = build_plan(
+            &["echo".to_string(), "{FOO}".to_string()],
+            &store,
+            None,
+        )
+        .expect("plan should build");
+        // No assertion needed on the touch (it's None); the contract is
+        // that `build_plan` doesn't panic and doesn't reach into a
+        // registry it wasn't given.
+    }
+
+    #[test]
+    fn touch_called_even_when_value_falls_back_to_env() {
+        // Default source `{FOO}` resolves via env when not in store. We
+        // still pass the name to touch_for_run because it's cheap and the
+        // registry's `touch_many` is a silent no-op for names it doesn't
+        // track. The alternative (filter at inject) would couple inject
+        // to registry state without a meaningful win.
+        let store = InjectMockStore::seed(&[]);
+        unsafe {
+            std::env::set_var("INJECT_TEST_FALLBACK", "from-env");
+        }
+        let touch = MockTouch::new();
+        let _ = build_plan(
+            &["echo".to_string(), "{INJECT_TEST_FALLBACK}".to_string()],
+            &store,
+            Some(&touch),
+        )
+        .expect("plan should build");
+        assert_eq!(
+            touch.total_names(),
+            vec!["INJECT_TEST_FALLBACK".to_string()],
+            "default-source names go to touch_for_run regardless of where they actually resolved"
+        );
+        unsafe {
+            std::env::remove_var("INJECT_TEST_FALLBACK");
+        }
     }
 
     #[test]

@@ -278,6 +278,27 @@ impl TempRegistry {
     }
 }
 
+/// Narrow contract that `inject::build_plan` consumes to bump idle timers
+/// on temp keys after their values have been resolved for a `shtum run`.
+/// Lives behind a trait so tests can supply a capturing mock without
+/// having to set up a real sidecar file. Errors are intentionally
+/// swallowed in production: a touch failure should never break the
+/// caller's command — at worst the key expires a few minutes earlier
+/// than it would have.
+pub trait TempTouch {
+    fn touch_for_run(&self, names: &[&str]);
+}
+
+impl TempTouch for TempRegistry {
+    fn touch_for_run(&self, names: &[&str]) {
+        if let Err(e) = self.touch_many(names) {
+            eprintln!(
+                "shtum: failed to bump temp-key idle timer for {names:?}: {e}"
+            );
+        }
+    }
+}
+
 /// Parse a `--ttl` value like `30m`, `2h`, `1d` into a `Duration`. Used as
 /// a clap `value_parser`, so the return type uses `String` errors. Min 60s,
 /// max 7d. Empty string and missing unit are rejected; everything else
