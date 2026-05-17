@@ -25,7 +25,8 @@
 
 use anyhow::{Context, Result};
 use serde_json::{Value, json};
-use std::fs::{self, OpenOptions};
+use std::fs::{self, File, OpenOptions};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -275,6 +276,91 @@ impl TempRegistry {
         drop(lock_file);
         result
     }
+}
+
+/// Parse a `--ttl` value like `30m`, `2h`, `1d` into a `Duration`. Used as
+/// a clap `value_parser`, so the return type uses `String` errors. Min 60s,
+/// max 7d. Empty string and missing unit are rejected; everything else
+/// maps to seconds via the unit suffix.
+pub fn parse_ttl(s: &str) -> Result<Duration, String> {
+    const SYNTAX_HINT: &str =
+        "expected <N>{s,m,h,d}, e.g. 30m, 2h, 1d";
+    let s = s.trim();
+    if s.is_empty() {
+        return Err(format!("--ttl is empty; {SYNTAX_HINT}"));
+    }
+    // Split off the trailing unit char.
+    let unit = s
+        .chars()
+        .last()
+        .ok_or_else(|| format!("--ttl is empty; {SYNTAX_HINT}"))?;
+    let num_str = &s[..s.len() - unit.len_utf8()];
+    if num_str.is_empty() {
+        return Err(format!("invalid --ttl '{s}': missing number; {SYNTAX_HINT}"));
+    }
+    let n: u64 = num_str
+        .parse()
+        .map_err(|_| format!("invalid --ttl '{s}': '{num_str}' is not a positive integer; {SYNTAX_HINT}"))?;
+    let mult: u64 = match unit {
+        's' => 1,
+        'm' => 60,
+        'h' => 3600,
+        'd' => 86400,
+        _ => return Err(format!("invalid --ttl '{s}': unknown unit '{unit}'; {SYNTAX_HINT}")),
+    };
+    let secs = n
+        .checked_mul(mult)
+        .ok_or_else(|| format!("--ttl '{s}' overflows; pick a smaller value"))?;
+    const MIN: u64 = 60;
+    const MAX: u64 = 7 * 86400;
+    if secs < MIN {
+        return Err(format!("--ttl too short: minimum is 60s ({secs}s requested)"));
+    }
+    if secs > MAX {
+        return Err(format!("--ttl too long: maximum is 7d ({secs}s requested)"));
+    }
+    Ok(Duration::from_secs(secs))
+}
+
+/// Render a `Duration` as a compact unit string (`30m`, `4h`, `2d`) for the
+/// stderr success note and dashboard countdown labels. Falls back to whole
+/// seconds when no larger unit divides evenly.
+pub fn format_duration_compact(d: Duration) -> String {
+    let secs = d.as_secs();
+    if secs == 0 {
+        return "0s".to_string();
+    }
+    if secs % 86400 == 0 {
+        return format!("{}d", secs / 86400);
+    }
+    if secs % 3600 == 0 {
+        return format!("{}h", secs / 3600);
+    }
+    if secs % 60 == 0 {
+        return format!("{}m", secs / 60);
+    }
+    format!("{}s", secs)
+}
+
+/// Generate a fresh `TMP_<6 chars>` name. Reads 6 bytes from `/dev/urandom`
+/// and maps each to the 62-char alphabet `[A-Za-z0-9]` via modulo. The
+/// modulo introduces a tiny bias, which is fine: the name is non-secret
+/// and collisions are handled by the caller via `store.add(force=false)`
+/// retry — uniqueness against the existing keyspace, not entropy, is the
+/// goal.
+pub fn generate_temp_name() -> Result<String> {
+    const ALPHABET: &[u8] =
+        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+    let mut bytes = [0u8; 6];
+    File::open("/dev/urandom")
+        .context("opening /dev/urandom for temp-key name generator")?
+        .read_exact(&mut bytes)
+        .context("reading /dev/urandom for temp-key name generator")?;
+    let suffix: String = bytes
+        .iter()
+        .map(|b| ALPHABET[(*b as usize) % ALPHABET.len()] as char)
+        .collect();
+    Ok(format!("TMP_{suffix}"))
 }
 
 fn parse_entry(v: &Value) -> Option<TempEntry> {
@@ -545,6 +631,80 @@ mod tests {
         atomic_write_json(&reg.path, &blob).unwrap();
         assert!(reg.snapshot().is_empty());
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn parse_ttl_accepts_canonical_units() {
+        assert_eq!(parse_ttl("60s").unwrap(), Duration::from_secs(60));
+        assert_eq!(parse_ttl("5m").unwrap(), Duration::from_secs(300));
+        assert_eq!(parse_ttl("4h").unwrap(), Duration::from_secs(14_400));
+        assert_eq!(parse_ttl("1d").unwrap(), Duration::from_secs(86_400));
+        assert_eq!(parse_ttl("7d").unwrap(), Duration::from_secs(7 * 86_400));
+    }
+
+    #[test]
+    fn parse_ttl_rejects_below_minimum() {
+        let err = parse_ttl("30s").unwrap_err();
+        assert!(err.contains("minimum"), "got: {err}");
+        let err = parse_ttl("0m").unwrap_err();
+        assert!(err.contains("minimum"), "got: {err}");
+    }
+
+    #[test]
+    fn parse_ttl_rejects_above_maximum() {
+        let err = parse_ttl("8d").unwrap_err();
+        assert!(err.contains("maximum"), "got: {err}");
+        let err = parse_ttl("999h").unwrap_err();
+        assert!(err.contains("maximum"), "got: {err}");
+    }
+
+    #[test]
+    fn parse_ttl_rejects_bad_syntax() {
+        assert!(parse_ttl("").is_err());
+        assert!(parse_ttl("5x").is_err());
+        assert!(parse_ttl("abc").is_err());
+        assert!(parse_ttl("m").is_err());
+        assert!(parse_ttl("-5m").is_err());
+        // Whitespace trimmed, then bad form.
+        assert!(parse_ttl("  5x  ").is_err());
+    }
+
+    #[test]
+    fn parse_ttl_trims_whitespace() {
+        assert_eq!(parse_ttl("  5m  ").unwrap(), Duration::from_secs(300));
+    }
+
+    #[test]
+    fn format_duration_compact_renders_largest_evenly_divisible_unit() {
+        assert_eq!(format_duration_compact(Duration::from_secs(0)), "0s");
+        assert_eq!(format_duration_compact(Duration::from_secs(30)), "30s");
+        assert_eq!(format_duration_compact(Duration::from_secs(60)), "1m");
+        assert_eq!(format_duration_compact(Duration::from_secs(90)), "90s");
+        assert_eq!(format_duration_compact(Duration::from_secs(300)), "5m");
+        assert_eq!(format_duration_compact(Duration::from_secs(3600)), "1h");
+        assert_eq!(format_duration_compact(Duration::from_secs(3660)), "61m");
+        assert_eq!(format_duration_compact(Duration::from_secs(86_400)), "1d");
+        assert_eq!(format_duration_compact(Duration::from_secs(4 * 3600)), "4h");
+    }
+
+    #[test]
+    fn generate_temp_name_shape() {
+        let name = generate_temp_name().unwrap();
+        assert!(name.starts_with("TMP_"), "got: {name}");
+        assert_eq!(name.len(), 10, "expected TMP_ + 6 chars; got: {name}");
+        let suffix = &name[4..];
+        assert!(
+            suffix.chars().all(|c| c.is_ascii_alphanumeric()),
+            "suffix should be [A-Za-z0-9]+; got: {suffix}"
+        );
+    }
+
+    #[test]
+    fn generate_temp_name_changes_each_call() {
+        // Astronomically unlikely to collide with 62^6 ~= 5.7e10 possibilities.
+        let a = generate_temp_name().unwrap();
+        let b = generate_temp_name().unwrap();
+        assert_ne!(a, b);
     }
 
     #[test]

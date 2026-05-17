@@ -230,6 +230,13 @@ fn match_safety_net(cmd: &str) -> Option<SafetyNetMatch> {
         let raw: &[(SafetyNetMatch, &str)] = &[
             (
                 SafetyNetMatch {
+                    label: "shtum quick",
+                    hint: "`shtum quick` prints the generated name on stdout — running it from Claude would put the temp name into the model's context, defeating the purpose of stashing the value out-of-band. Ask the human to run `shtum quick` in their own terminal, then reference the returned name as `{TMP_XXXXXX}` in subsequent commands.",
+                },
+                r"^\s*(?:\S+/)?shtum\s+quick\b",
+            ),
+            (
+                SafetyNetMatch {
                     label: "aws cli",
                     hint: "the aws CLI reads AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY from env. Append `{env-inject:AWS_ACCESS_KEY_ID} {env-inject:AWS_SECRET_ACCESS_KEY}` to your command (substitute the stored names you actually have).",
                 },
@@ -441,6 +448,45 @@ mod tests {
             match_safety_net("  aws --profile p s3 ls").map(|m| m.label),
             Some("aws cli"),
         );
+    }
+
+    #[test]
+    fn safety_net_catches_shtum_quick() {
+        // Bare invocation, path-prefixed invocation, and one with args
+        // all hit the same deny rule.
+        assert_eq!(
+            match_safety_net("shtum quick").map(|m| m.label),
+            Some("shtum quick"),
+        );
+        assert_eq!(
+            match_safety_net("shtum quick --from-stdin").map(|m| m.label),
+            Some("shtum quick"),
+        );
+        assert_eq!(
+            match_safety_net("/usr/local/bin/shtum quick").map(|m| m.label),
+            Some("shtum quick"),
+        );
+        assert_eq!(
+            match_safety_net("  shtum quick").map(|m| m.label),
+            Some("shtum quick"),
+        );
+    }
+
+    #[test]
+    fn shtum_quick_hint_mentions_human_terminal() {
+        let m = match_safety_net("shtum quick").unwrap();
+        assert!(
+            m.hint.contains("human") && m.hint.contains("terminal"),
+            "deny hint should tell Claude to ask the human to run it; got: {}",
+            m.hint
+        );
+    }
+
+    #[test]
+    fn shtum_run_still_passes_through() {
+        // The new `shtum quick` deny pattern must not accidentally match
+        // `shtum run` — different subcommand, different threat model.
+        assert!(match_safety_net("shtum run -- echo hi").is_none());
     }
 
     #[test]

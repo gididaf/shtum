@@ -1,5 +1,8 @@
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
+use std::time::Duration;
+
+use crate::temp::parse_ttl;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -38,6 +41,15 @@ pub enum Command {
     /// hook-install snippets. Binds to 127.0.0.1 only; access is gated by a
     /// random token printed at startup. Runs until Ctrl+C.
     Dashboard(DashboardArgs),
+    /// Stash a one-off value under an auto-generated name (e.g. `TMP_a8f3k2`).
+    ///
+    /// The generated name is printed on stdout (one line, pipeable); a friendly
+    /// note with the expiry policy goes to stderr. The value goes into the
+    /// macOS Keychain like any other `shtum store add`, plus a sidecar
+    /// registry entry that drives idle-TTL expiry. Auto-removes itself after
+    /// 4 hours of no use (each `shtum run` that resolves the key resets the
+    /// timer). Pass `--ttl <duration>` to override.
+    Quick(QuickArgs),
 }
 
 #[derive(clap::Args, Debug)]
@@ -192,4 +204,23 @@ pub struct RotateArgs {
     /// newline is stripped.
     #[arg(long, conflicts_with = "from_file")]
     pub from_stdin: bool,
+}
+
+#[derive(clap::Args, Debug)]
+pub struct QuickArgs {
+    /// Read the value from this file instead of prompting. A single trailing
+    /// newline is stripped.
+    #[arg(long, value_name = "PATH", conflicts_with = "from_stdin")]
+    pub from_file: Option<PathBuf>,
+
+    /// Read the value from stdin instead of prompting. A single trailing
+    /// newline is stripped.
+    #[arg(long, conflicts_with = "from_file")]
+    pub from_stdin: bool,
+
+    /// Idle TTL — time of no use (no `shtum run` resolving this key, no
+    /// dashboard `Extend` press) before auto-expiry. Format: `<N>{s,m,h,d}`,
+    /// e.g. `30m`, `2h`, `1d`. Min `60s`, max `7d`. Default: `4h`.
+    #[arg(long, value_name = "DURATION", value_parser = parse_ttl)]
+    pub ttl: Option<Duration>,
 }

@@ -15,7 +15,8 @@ use std::io::{IsTerminal, Read};
 use std::path::Path;
 
 use crate::cli::{
-    AddArgs, Cli, Command, DashboardArgs, HookAction, RenameArgs, RotateArgs, RunArgs, StoreAction,
+    AddArgs, Cli, Command, DashboardArgs, HookAction, QuickArgs, RenameArgs, RotateArgs, RunArgs,
+    StoreAction,
 };
 use crate::hook::Scope;
 use crate::store::{SecretStore, StoreError, default_store, validate_name};
@@ -40,6 +41,10 @@ fn real_main() -> Result<i32> {
         Command::Run(args) => run_command(args),
         Command::Hook { action } => run_hook(action),
         Command::Dashboard(args) => run_dashboard(args),
+        Command::Quick(args) => {
+            run_quick(args)?;
+            Ok(0)
+        }
     }
 }
 
@@ -159,6 +164,70 @@ fn list_secrets(store: &impl SecretStore) -> Result<()> {
     for n in names {
         println!("{n}");
     }
+    Ok(())
+}
+
+fn run_quick(args: QuickArgs) -> Result<()> {
+    let store = default_store();
+    sweep_temp_keys(&store);
+    let value = read_value("new temp key", args.from_file.as_deref(), args.from_stdin)?;
+    if value.is_empty() {
+        anyhow::bail!("refusing to store an empty value");
+    }
+    let registry = temp::TempRegistry::open_default()
+        .context("opening temp-key registry")?;
+    let ttl = args.ttl.unwrap_or_else(|| {
+        std::time::Duration::from_secs(temp::DEFAULT_TTL_SECONDS)
+    });
+
+    // Generate-and-add with collision retry. Store.add (force=false) is
+    // the atomic uniqueness check — if we lose a race against another
+    // process that happens to pick the same TMP_xxxxxx, the loser
+    // generates a fresh name. 10 attempts is overkill against a 62^6
+    // (~5.7e10) keyspace; we'd need to hold ~250k entries before even
+    // the first attempt has a 1% collision rate.
+    let mut last_err: Option<StoreError> = None;
+    let mut chosen: Option<String> = None;
+    for _ in 0..10 {
+        let candidate = temp::generate_temp_name()
+            .context("generating temp-key name")?;
+        match store.add(&candidate, &value, false) {
+            Ok(()) => {
+                chosen = Some(candidate);
+                break;
+            }
+            Err(StoreError::AlreadyExists(_)) => continue,
+            Err(e) => {
+                last_err = Some(e);
+                break;
+            }
+        }
+    }
+    let name = match chosen {
+        Some(n) => n,
+        None => {
+            if let Some(e) = last_err {
+                return Err(anyhow::Error::from(e).context("failed to store temp value"));
+            }
+            anyhow::bail!(
+                "could not find an unused TMP_* name after 10 attempts; \
+                 this is extremely unlikely — does ~/Library/Application Support/shtum \
+                 contain an enormous registry?"
+            );
+        }
+    };
+
+    registry
+        .register(&name, ttl)
+        .with_context(|| format!("registering {name} in temp-key registry"))?;
+
+    // stdout: just the name, easy to pipe / capture.
+    println!("{name}");
+    // stderr: human-friendly hint.
+    eprintln!(
+        "created temp key `{name}`, expires after {} idle. use as `{{{name}}}` in `shtum run`.",
+        temp::format_duration_compact(ttl)
+    );
     Ok(())
 }
 
