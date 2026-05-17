@@ -5,6 +5,7 @@ mod hook;
 mod inject;
 mod redact;
 mod store;
+mod temp;
 mod tempfile;
 mod util;
 
@@ -68,6 +69,7 @@ fn run_hook(action: HookAction) -> Result<i32> {
 
 fn run_command(args: RunArgs) -> Result<i32> {
     let store = default_store();
+    sweep_temp_keys(&store);
     if args.dry_run {
         // Resolve everything (so dry-run doubles as a reachability check),
         // then display the masked argv without ever using the real values.
@@ -152,11 +154,27 @@ fn rename_secret(store: &impl SecretStore, args: RenameArgs) -> Result<()> {
 }
 
 fn list_secrets(store: &impl SecretStore) -> Result<()> {
+    sweep_temp_keys(store);
     let names = store.list().context("failed to list secrets")?;
     for n in names {
         println!("{n}");
     }
     Ok(())
+}
+
+/// Best-effort lazy sweep of expired temp keys. Called at the start of
+/// every operation that surfaces or resolves keys (`shtum run`, `shtum
+/// store list`, dashboard request handlers). Never fails the calling
+/// operation: registry open failure is silent; per-entry backend errors
+/// are logged to stderr and the entry is kept for next sweep.
+fn sweep_temp_keys<S: SecretStore + ?Sized>(store: &S) {
+    let Ok(registry) = temp::TempRegistry::open_default() else {
+        return;
+    };
+    let report = registry.sweep(store);
+    for (name, err) in &report.errored {
+        eprintln!("shtum: failed to remove expired temp key `{name}`: {err}");
+    }
 }
 
 fn add_secret(store: &impl SecretStore, args: AddArgs) -> Result<()> {

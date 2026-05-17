@@ -2,13 +2,13 @@ use anyhow::{Context, Result, bail};
 use regex::Regex;
 use serde_json::{Value, json};
 use std::fs;
-use std::io::{self, Read, Write};
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use crate::inject;
 use crate::store::{SecretStore, default_store};
-use crate::util::shtum_exe_path;
+use crate::util::{atomic_write_json, shtum_exe_path};
 
 #[derive(Clone, Copy, Debug)]
 pub enum Scope {
@@ -408,35 +408,6 @@ fn read_settings(path: &Path) -> Result<Value> {
     }
     serde_json::from_str(&raw)
         .with_context(|| format!("parsing {} as JSON", path.display()))
-}
-
-fn atomic_write_json(path: &Path, value: &Value) -> Result<()> {
-    let parent = path
-        .parent()
-        .context("settings path has no parent directory")?;
-    fs::create_dir_all(parent)
-        .with_context(|| format!("creating {}", parent.display()))?;
-    let file_name = path
-        .file_name()
-        .context("settings path has no file name")?
-        .to_string_lossy()
-        .into_owned();
-    let tmp = parent.join(format!(".{file_name}.shtum.tmp"));
-    let json = serde_json::to_string_pretty(value)?;
-    {
-        let mut f = fs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .open(&tmp)
-            .with_context(|| format!("creating {}", tmp.display()))?;
-        f.write_all(json.as_bytes())?;
-        f.write_all(b"\n")?;
-        f.sync_all()?;
-    }
-    fs::rename(&tmp, path)
-        .with_context(|| format!("renaming {} -> {}", tmp.display(), path.display()))?;
-    Ok(())
 }
 
 #[cfg(test)]
