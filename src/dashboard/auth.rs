@@ -1,3 +1,6 @@
+// Copyright 2026 Gidi Dafner
+// SPDX-License-Identifier: Apache-2.0
+
 //! Dashboard authentication: random session token + Host-header validation.
 //!
 //! The dashboard binds 127.0.0.1 only, but loopback is not a sufficient

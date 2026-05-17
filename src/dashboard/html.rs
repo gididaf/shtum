@@ -1,3 +1,6 @@
+// Copyright 2026 Gidi Dafner
+// SPDX-License-Identifier: Apache-2.0
+
 //! HTML rendering for the dashboard. Server-rendered, no template engine,
 //! no SPA — page strings are assembled from `format!()` with all
 //! interpolated user content passed through [`escape`].

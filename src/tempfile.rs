@@ -1,3 +1,6 @@
+// Copyright 2026 Gidi Dafner
+// SPDX-License-Identifier: Apache-2.0
+
 use anyhow::{Context, Result};
 use std::fs::OpenOptions;
 use std::io::{Read, Write};

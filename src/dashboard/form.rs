@@ -1,3 +1,6 @@
+// Copyright 2026 Gidi Dafner
+// SPDX-License-Identifier: Apache-2.0
+
 //! Strict parser for `application/x-www-form-urlencoded` request bodies.
 //!
 //! The dashboard's mutation routes accept exactly one set of form fields

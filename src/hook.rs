@@ -1,3 +1,6 @@
+// Copyright 2026 Gidi Dafner
+// SPDX-License-Identifier: Apache-2.0
+
 use anyhow::{Context, Result, bail};
 use regex::Regex;
 use serde_json::{Value, json};

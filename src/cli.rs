@@ -1,3 +1,6 @@
+// Copyright 2026 Gidi Dafner
+// SPDX-License-Identifier: Apache-2.0
+
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use std::time::Duration;

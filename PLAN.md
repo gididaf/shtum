@@ -1,7 +1,7 @@
 # shtum — Secret-injecting command wrapper for AI agents
 
 > **Status:** design phase. Nothing built yet.
-> **Owner:** gidi@dreamvps.com
+> **Owner:** gididaf1@gmail.com
 > **Language:** Rust
 > **Platform target (v1):** macOS (Apple Silicon + Intel). Linux as a fast-follow.
 > **License intent:** open source, permissive (MIT or Apache-2.0 — decide before first publish).

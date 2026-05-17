@@ -3,7 +3,7 @@
 ## Reporting a vulnerability
 
 If you believe you've found a security issue in `shtum`, please email
-**`gidi@dreamvps.com`** with the subject line `shtum security` rather than
+**`gididaf1@gmail.com`** with the subject line `shtum security` rather than
 opening a public issue or pull request. I'll acknowledge receipt within 72 hours
 and work with you on a coordinated disclosure timeline if appropriate.
 
