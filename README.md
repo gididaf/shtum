@@ -16,9 +16,25 @@ For the full design rationale and threat model, see [`PLAN.md`](./PLAN.md) and [
 
 ## Install
 
-### Prebuilt binary (recommended)
+### Homebrew (recommended)
 
-Each tagged release publishes signed-by-SHA256 macOS tarballs for Apple Silicon and Intel. Download, verify, extract, drop on PATH:
+```bash
+brew install gididaf/shtum/shtum
+```
+
+Adds the `gididaf/shtum` tap and installs the binary. `brew upgrade shtum` pulls future releases.
+
+### Curl-pipe installer
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/gididaf/shtum/main/install.sh | sh
+```
+
+Detects your architecture, downloads the latest release tarball, verifies it against the published SHA256SUMS, strips macOS Gatekeeper quarantine, drops the binary into `/usr/local/bin`. Pin a specific release with `SHTUM_VERSION=v0.3.0`, or change the destination with `INSTALL_DIR=$HOME/.local/bin`.
+
+### Manual tarball download
+
+If you want to inspect the bits before they hit your machine:
 
 ```bash
 VERSION=v0.3.0
@@ -28,9 +44,10 @@ curl -fsSL -O "https://github.com/gididaf/shtum/releases/download/${VERSION}/SHA
 shasum -a 256 -c SHA256SUMS --ignore-missing
 tar xzf "shtum-${VERSION}-${TARGET}.tar.gz"
 sudo mv "shtum-${VERSION}-${TARGET}/shtum" /usr/local/bin/
+xattr -dr com.apple.quarantine /usr/local/bin/shtum   # strip Gatekeeper flag
 ```
 
-The binary is not notarized in v0.x, so macOS Gatekeeper will warn on first run. Allow once via System Settings → Privacy & Security → "Allow Anyway", or strip the quarantine flag with `xattr -dr com.apple.quarantine /usr/local/bin/shtum`.
+The binary is not notarized in v0.x, so macOS Gatekeeper will warn on first launch unless you strip the quarantine flag as shown (or use the Homebrew / curl-pipe paths, both of which handle it for you).
 
 ### From source
 
@@ -40,7 +57,7 @@ cargo build --release
 cp target/release/shtum ~/.local/bin/    # or anywhere on PATH
 ```
 
-Requires Rust 1.85+ and macOS. The binary is a single static executable; no runtime dependencies beyond the system Keychain.
+Requires Rust 1.89+ and macOS. The binary is a single static executable; no runtime dependencies beyond the system Keychain.
 
 ## Quickstart
 
