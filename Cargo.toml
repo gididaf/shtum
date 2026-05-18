@@ -1,6 +1,6 @@
 [package]
 name = "shtum"
-version = "0.3.1"
+version = "0.3.2"
 edition = "2024"
 description = "Secret-injecting command wrapper for AI agents — keeps credentials out of the LLM context."
 license = "MIT"

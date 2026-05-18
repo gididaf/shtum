@@ -4,6 +4,12 @@ All notable changes to `shtum` are recorded here. Format loosely follows [Keep a
 
 ## [Unreleased]
 
+## [0.3.2] — 2026-05-18
+
+### Removed
+
+- **README §Trademark section.** The trademark assertion (and the prohibition on fork-naming + the descriptive-use carve-out) was added when the project was Apache-2.0-licensed and intended to claim a stronger naming boundary than the OSI license alone implies. With the move to MIT — which is silent on trademark and which most readers correctly parse as maximally permissive — keeping a separate "Trademark" subsection invited mis-reading the project as more restrictive than it actually is. The MIT permission notice in `LICENSE` is now the entire grant; no parallel naming-rights claim is asserted here.
+
 ## [0.3.1] — 2026-05-18
 
 ### Changed
