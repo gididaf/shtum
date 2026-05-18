@@ -39,7 +39,7 @@ Single static Rust binary. Modules under `src/`:
 
 If a request appears to contradict any of these, surface it before proceeding.
 
-- **License:** Apache-2.0.
+- **License:** MIT (switched from Apache-2.0 in v0.3.1; choice driven by simpler permission notice and broader downstream-acceptance, not by any rejection of Apache-2.0's patent grant).
 - **Platform:** macOS only. `SecretStore` trait is the abstraction point for Linux later.
 - **Namespace claims:** GitHub `gididaf/shtum` is **public** and Homebrew tap `gididaf/homebrew-shtum` is **public** (both claimed 2026-05-17, v0.3.0 release shipped). Pushes to either repo are routine for normal release work — no force-pushes to `main`, no destructive operations, no other-namespace claims without explicit user instruction. **crates.io is still deferred** (`publish = false` in `Cargo.toml`); flip when ready.
 - **Placeholder grammar:** two orthogonal axes:

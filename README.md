@@ -205,11 +205,11 @@ See [`docs/threat-model.md`](./docs/threat-model.md) for the full breakdown.
 
 ## License
 
-Apache-2.0. See [`LICENSE`](./LICENSE). You may use, modify, redistribute, and build commercial products on top of the code, subject to the conditions in the license (notably: preserve the copyright notice and the `LICENSE` file in redistributions, and state any significant changes you make).
+MIT. See [`LICENSE`](./LICENSE). You may use, modify, redistribute, and build commercial products on top of the code, subject to preserving the copyright notice and the MIT permission notice in copies or substantial portions of the Software.
 
 ## Trademark
 
-"shtum" is an unregistered trademark of Gidi Dafner. The Apache-2.0 license grants rights to the **code**, not to the **name**.
+"shtum" is an unregistered trademark of Gidi Dafner. The MIT license grants rights to the **code**, not to the **name**.
 
 You are welcome to fork this project and ship derivative works. If you do, you must use a different name and a different binary name for your fork. Do not publish a fork — to crates.io, Homebrew, npm, GitHub releases, or anywhere else — under the name "shtum", "Shtum", "SHTUM", or any name confusingly similar (e.g., "shtum2", "shtum-cli", "shtumx"). Do not use the name "shtum" to promote, brand, or describe a competing tool in a way that suggests endorsement by or association with this project.
 

@@ -4,6 +4,13 @@ All notable changes to `shtum` are recorded here. Format loosely follows [Keep a
 
 ## [Unreleased]
 
+## [0.3.1] — 2026-05-18
+
+### Changed
+
+- **License switched from Apache-2.0 to MIT.** Driven by a preference for the shorter permission notice and broader downstream acceptance; not a rejection of Apache-2.0's patent grant. Previously-released artifacts (the v0.3.0 tag and tarball) remain available under Apache-2.0; all source from v0.3.1 onward is MIT-licensed. `LICENSE`, `Cargo.toml`, all `SPDX-License-Identifier` headers in `src/`, and the README §License + Trademark sections are updated in lockstep.
+- **Hook rewrite now wraps the original command in `bash -c` for multi-statement scripts.** Previously the rewrite handed the command back to the outer bash unwrapped, which split it on statement boundaries (`;`, `&&`, `||`, newlines) and only ran the first statement under `shtum run`; subsequent statements executed as plain bash with placeholder syntax still in argv. The new form wraps the whole script as a single argv slot so every statement is processed by the same `inject::build_plan` pass. `shell_single_quote` handles embedded single quotes via the POSIX-portable escape idiom.
+
 ## [0.3.0] — 2026-05-17
 
 ### Added

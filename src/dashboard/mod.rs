@@ -1,5 +1,5 @@
 // Copyright 2026 Gidi Dafner
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT
 
 //! Local web dashboard for managing stored secrets and viewing hook-install
 //! snippets. Binds 127.0.0.1 only; gated by a random session token. Runs

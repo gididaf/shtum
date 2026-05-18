@@ -1,5 +1,5 @@
 // Copyright 2026 Gidi Dafner
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT
 
 //! Strict parser for `application/x-www-form-urlencoded` request bodies.
 //!

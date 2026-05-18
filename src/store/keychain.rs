@@ -1,5 +1,5 @@
 // Copyright 2026 Gidi Dafner
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT
 
 use crate::store::{SecretStore, StoreError};
 use security_framework::item::{ItemClass, ItemSearchOptions, SearchResult};

@@ -4,7 +4,7 @@
 > **Owner:** gididaf1@gmail.com
 > **Language:** Rust
 > **Platform target (v1):** macOS (Apple Silicon + Intel). Linux as a fast-follow.
-> **License intent:** open source, permissive (MIT or Apache-2.0 — decide before first publish).
+> **License:** MIT (Apache-2.0 was used for v0.3.0; switched to MIT in v0.3.1 for the shorter permission notice — see `LICENSE` and `CHANGELOG.md`).
 
 ---
 
@@ -78,7 +78,7 @@ So if the user wants the agent to act on their behalf against an authenticated s
 | v1 storage backend | macOS Keychain via `security` CLI (or `security-framework` crate) | Already on every Mac; OS-protected; no install/account/cost |
 | Storage backend abstraction | Trait-based (`SecretStore`) | Can add `pass`, `sops`, `age`, env vars, etc. later without rewriting |
 | Distribution | GitHub releases + Homebrew tap (`shtum/homebrew-shtum`) | Standard Rust CLI distribution; no npm/PyPI needed |
-| License | Permissive (MIT or Apache-2.0) — decide before first publish | Project goals favor adoption over copyleft |
+| License | MIT (Apache-2.0 in v0.3.0, switched in v0.3.1) | Permissive; shorter permission notice than Apache-2.0; project goals favor adoption over copyleft |
 | Name | `shtum` | "Stay silent" — literally what the tool does. All namespaces clean. |
 
 ---
@@ -264,7 +264,7 @@ Order matters — do these before writing any code:
 - [ ] **Multi-store fallback chain** — Keychain first, then env, then file? User-configurable order?
 - [ ] **What to print to user vs. agent** — should `shtum run` print pre-redaction output to the user's terminal (visible only to them) AND post-redaction output to whatever stream the agent reads? (Probably out of scope for v1; agent reads what the user sees.)
 - [ ] **Cross-platform** — when do we add Linux? (Keychain replacement: `secret-tool` / libsecret on Linux. Trait abstraction makes this drop-in.)
-- [ ] **License** — MIT or Apache-2.0? (MIT for max simplicity; Apache for patent grant.)
+- [x] **License** — Resolved: Apache-2.0 in v0.3.0, switched to MIT in v0.3.1.
 
 ---
 

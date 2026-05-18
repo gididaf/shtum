@@ -1,5 +1,5 @@
 // Copyright 2026 Gidi Dafner
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT
 
 //! Temp-key registry — sidecar metadata for `TMP_*` keys created via
 //! `shtum quick`. Tracks idle TTL (last_used_at + ttl_seconds); sweep
