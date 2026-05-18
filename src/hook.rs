@@ -175,7 +175,14 @@ pub fn handle() -> Result<i32> {
     // Placeholder branch — auto-wrap.
     if inject::contains_placeholder(command) {
         let exe = shtum_exe_path()?;
-        let rewritten = format!("{exe} run -- {command}");
+        // Wrap the whole command in `bash -c '<script>'` so multi-statement
+        // commands (newlines, `;`, `&&`, `||`) get placeholder substitution
+        // across every statement, not just the first. Without the wrap, the
+        // outer bash splits the rewritten string on statement boundaries and
+        // only the first line runs under `shtum run` — later statements
+        // execute as plain bash with the literal `{NAME}` still in argv.
+        let script = shell_single_quote(command);
+        let rewritten = format!("{exe} run -- bash -c {script}");
         let out = json!({
             "hookSpecificOutput": {
                 "hookEventName": "PreToolUse",
@@ -205,6 +212,23 @@ pub fn handle() -> Result<i32> {
 
     // Default: pass through.
     Ok(0)
+}
+
+/// Wrap `s` in single quotes for safe `bash -c` consumption, escaping any
+/// internal single quotes via the POSIX-portable `'\''` idiom. The result is
+/// always a single shell word.
+fn shell_single_quote(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('\'');
+    for c in s.chars() {
+        if c == '\'' {
+            out.push_str("'\\''");
+        } else {
+            out.push(c);
+        }
+    }
+    out.push('\'');
+    out
 }
 
 fn looks_like_shtum_run(cmd: &str) -> bool {
@@ -423,6 +447,33 @@ fn read_settings(path: &Path) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shell_single_quote_wraps_plain_string() {
+        assert_eq!(shell_single_quote("echo hi"), "'echo hi'");
+    }
+
+    #[test]
+    fn shell_single_quote_escapes_internal_single_quotes() {
+        // `it's` must become `'it'\''s'` for bash to see `it's` as one word.
+        assert_eq!(shell_single_quote("it's"), "'it'\\''s'");
+        // Verify the round-trip: `bash -c <quoted>` would echo back the input.
+        let quoted = shell_single_quote("can't won't");
+        assert_eq!(quoted, "'can'\\''t won'\\''t'");
+    }
+
+    #[test]
+    fn shell_single_quote_preserves_placeholders_and_newlines() {
+        let cmd = "curl -H 'A: B {TOK}' x\ncurl -H 'A: B {TOK}' y";
+        let out = shell_single_quote(cmd);
+        // The placeholder text survives intact (no `{TOK}` mutation).
+        assert!(out.contains("{TOK}"));
+        // The newline is preserved inside the quotes (bash -c will see a
+        // multi-statement script).
+        assert!(out.contains('\n'));
+        // Internal single quotes in the test input are properly escaped.
+        assert!(out.contains("'\\''"));
+    }
 
     #[test]
     fn loop_guard_matches_shtum_run_variants() {
